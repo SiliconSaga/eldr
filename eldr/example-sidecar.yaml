@@ -1,0 +1,14 @@
+# eldr/example-sidecar.yaml — Refrhus starting point; refine as the house is measured.
+design:
+  indoor_heating_f: 70        # winter setpoint
+  outdoor_heating_99_f: 15    # 99% heating design temp (NJ-ish placeholder; verify by location)
+  supply_air_rise_f: 50       # supply-air temperature rise over room, for CFM sizing
+infiltration:
+  ach: 0.5                    # whole-house air changes/hour (estimate; blower-door later)
+assemblies:                   # U-value, BTU/(hr*ft^2*F), per surface category
+  exterior_wall: 0.09         # 2x4 + R-13-ish
+  basement_wall: 0.20         # 8in cinderblock, partly below grade
+  window: 0.30                # double-pane
+  door: 0.40
+  ceiling: 0.026              # attic floor, well insulated
+  floor: 0.05                 # over unconditioned / slab edge
