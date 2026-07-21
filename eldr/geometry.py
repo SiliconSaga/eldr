@@ -7,18 +7,36 @@ saved from Sweet Home 3D with no unpack step.
 from __future__ import annotations
 from dataclasses import dataclass, field
 import math
-import xml.etree.ElementTree as ET
+import os
 import zipfile
+from xml.etree.ElementTree import Element
+import defusedxml.ElementTree as DET
 from eldr import units
 
+# Cap the parsed Home.xml — a .sh3d/Home.xml can be third-party input, so bound it
+# (with defusedxml) against zip-bomb / billion-laughs style attacks.
+MAX_HOME_XML_BYTES = 64 * 1024 * 1024
 
-def _read_home_root(path: str):
-    """Return the <home> XML root from an exploded Home.xml or a packed .sh3d (ZIP)."""
+
+def _read_home_root(path: str) -> Element:
+    """Return the <home> XML root from an exploded Home.xml or a packed .sh3d (ZIP).
+
+    Hardened: defusedxml parser + a size cap, since the model can be third-party input.
+    """
     if zipfile.is_zipfile(path):
         with zipfile.ZipFile(path) as z:
+            try:
+                info = z.getinfo("Home.xml")
+            except KeyError:
+                raise ValueError(
+                    f"{path} is a ZIP but has no Home.xml — not a Sweet Home 3D .sh3d") from None
+            if info.file_size > MAX_HOME_XML_BYTES:
+                raise ValueError(f"Home.xml in {path} is too large ({info.file_size} bytes)")
             with z.open("Home.xml") as f:
-                return ET.parse(f).getroot()
-    return ET.parse(path).getroot()
+                return DET.parse(f).getroot()
+    if os.path.getsize(path) > MAX_HOME_XML_BYTES:
+        raise ValueError(f"{path} is too large ({os.path.getsize(path)} bytes)")
+    return DET.parse(path).getroot()
 
 
 @dataclass(frozen=True)
@@ -33,7 +51,7 @@ class Envelope:
     volume_ft3: float
     # window area (ft^2) by compass facing "N"/"E"/"S"/"W" — for orientation-resolved
     # solar gain. Reflects the home's compass northDirection (0 by default until set).
-    windows_by_orientation: dict = field(default_factory=dict)
+    windows_by_orientation: dict[str, float] = field(default_factory=dict)
 
 
 def _f(el, attr):

@@ -1,3 +1,4 @@
+import pytest
 from eldr import report, loads, sidecar, sizing
 
 
@@ -70,3 +71,9 @@ def test_render_with_cooling_shows_section():
 def test_render_without_cooling_omits_section():
     md = report.render_heating(_result(), _sc())
     assert "Cooling Load" not in md
+
+
+def test_render_cooling_without_conditions_errors():
+    # a CoolingResult but a side-car with no cooling block -> clear error, not AttributeError
+    with pytest.raises(ValueError, match="cooling"):
+        report.render_heating(_result(), _sc(), cooling=_cooling())

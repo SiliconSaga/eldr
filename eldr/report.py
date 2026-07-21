@@ -39,6 +39,8 @@ def render_heating(result: loads.HeatingResult, sc: sidecar.SideCar,
 def _cooling_section(c: loads.CoolingResult, sc: sidecar.SideCar) -> list[str]:
     """Build the cooling-load markdown lines (sensible breakdown + latent + total)."""
     cd = sc.cooling
+    if cd is None:
+        raise ValueError("cooling report requires cooling conditions in the side-car")
     lines = [
         "",
         "## Eldr — Cooling Load (Manual J 1b, whole-house)",

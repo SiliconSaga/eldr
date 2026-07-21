@@ -31,6 +31,10 @@ class SizingResult:
 def size_equipment(heating_btuh: float, sc: sidecar.SideCar,
                    cooling_btuh: float | None = None) -> SizingResult:
     """Size on the larger of heating/cooling: load -> recommended size, next size, verdict."""
+    if not math.isfinite(heating_btuh) or heating_btuh <= 0:
+        raise ValueError("heating load must be finite and > 0 to size equipment")
+    if cooling_btuh is not None and (not math.isfinite(cooling_btuh) or cooling_btuh <= 0):
+        raise ValueError("cooling load must be finite and > 0 to size equipment")
     if cooling_btuh is not None and cooling_btuh > heating_btuh:
         design_btuh, basis = cooling_btuh, "cooling"
     else:

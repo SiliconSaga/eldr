@@ -52,6 +52,13 @@ def test_invalid_load_rejected(design_btuh):
         sizing.size_equipment(design_btuh, _sc(existing_tons=4.0))
 
 
+@pytest.mark.parametrize("cooling_btuh", [0, -1, float("nan"), float("inf")])
+def test_invalid_cooling_load_rejected(cooling_btuh):
+    # a bad cooling_btuh must not be silently ignored (it fails the > comparison)
+    with pytest.raises(ValueError, match="cooling load"):
+        sizing.size_equipment(36000, _sc(), cooling_btuh=cooling_btuh)
+
+
 def test_verdict_oversized():
     # load 3.0 tons, existing 4.0 -> +33% -> oversized
     r = sizing.size_equipment(36000, _sc(existing_tons=4.0))

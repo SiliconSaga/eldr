@@ -99,6 +99,18 @@ def test_cooling_block_rejects_bad_shgc(tmp_path):
         sidecar.load_sidecar(_write(tmp_path, _VALID + bad))
 
 
+def test_cooling_block_rejects_empty_mapping(tmp_path):
+    # an explicit `cooling: {}` must fail on missing keys, not silently disable cooling
+    with pytest.raises(ValueError, match="cooling"):
+        sidecar.load_sidecar(_write(tmp_path, _VALID + "    cooling: {}\n"))
+
+
+def test_cooling_block_rejects_boolean(tmp_path):
+    bad = "    cooling:\n      indoor_f: true\n      outdoor_1_f: 90\n      shgc: 0.35\n      occupants: 3\n"
+    with pytest.raises(ValueError, match="indoor_f"):
+        sidecar.load_sidecar(_write(tmp_path, _VALID + bad))
+
+
 def test_load_sidecar_rejects_bad_values(tmp_path):
     base = """
         design:

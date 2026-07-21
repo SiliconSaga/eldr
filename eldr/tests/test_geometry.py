@@ -1,6 +1,16 @@
 import textwrap
 import zipfile
+import pytest
 from eldr import geometry
+
+
+def _fixture_with_compass(north_dir):
+    # Same one-room box, plus a compass so orientation exercises the rotation.
+    return FIXTURE.replace(
+        "<home version='7400' name='t' wallHeight='300'>",
+        f"<home version='7400' name='t' wallHeight='300'>\n"
+        f"  <compass x='0' y='0' diameter='100' northDirection='{north_dir}'/>",
+    )
 
 # A one-level box: 4 exterior walls (1000cm x 500cm room, height 300cm) with one
 # 100cm x 100cm window on the south wall; an interior partition wall + door; and a
@@ -62,6 +72,15 @@ def test_window_orientation_south(tmp_path):
     assert abs(env.windows_by_orientation["S"] - units.sqcm_to_sqft(100 * 100)) < 1e-6
 
 
+def test_window_orientation_rotated_compass(tmp_path):
+    # northDirection = pi/2 rotates true-north 90deg clockwise, so the bottom
+    # (plan-south) wall's window buckets to East. Guards the rotation sign + radians.
+    p = tmp_path / "Home.xml"
+    p.write_text(_fixture_with_compass("1.57079632679"))
+    env = geometry.extract_envelope(str(p))
+    assert set(env.windows_by_orientation) == {"E"}
+
+
 def test_extract_envelope_from_sh3d(tmp_path):
     # A .sh3d is a ZIP whose Home.xml is authoritative — eldr reads it directly.
     sh3d = tmp_path / "House.sh3d"
@@ -72,3 +91,12 @@ def test_extract_envelope_from_sh3d(tmp_path):
     cats = _by_cat(env)
     assert abs(cats["window"] - units.sqcm_to_sqft(100 * 100)) < 1e-6
     assert abs(env.volume_ft3 - (units.cm_to_ft(1000) * units.cm_to_ft(500) * units.cm_to_ft(300))) < 1e-6
+
+
+def test_zip_without_home_xml_errors(tmp_path):
+    # is_zipfile() is true for many non-.sh3d zips — give a clear error.
+    z = tmp_path / "notahouse.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("other.txt", "nope")
+    with pytest.raises(ValueError, match="Home.xml"):
+        geometry.extract_envelope(str(z))

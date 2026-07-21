@@ -13,11 +13,12 @@
 ## Requirements
 
 - Python 3.11+
-- A local virtualenv with `pytest` + `pyyaml` (the `ws test eldr` adapter uses it):
+- A local virtualenv with `pyyaml` + `defusedxml` (+ `pytest` for the suite; the `ws test eldr` adapter uses it):
+
   ```bash
   cd components/eldr
   python3 -m venv .venv
-  .venv/bin/pip install pytest pyyaml
+  .venv/bin/pip install pyyaml defusedxml pytest
   ```
 
 ## Usage

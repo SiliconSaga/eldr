@@ -43,6 +43,14 @@ def _require(d: dict, key: str, ctx: str):
     return d[key]
 
 
+def _require_number(d: dict, key: str, ctx: str) -> float:
+    """Require a key and coerce to float, rejecting booleans (bool is an int subtype)."""
+    v = _require(d, key, ctx)
+    if isinstance(v, bool):
+        raise ValueError(f"{ctx}.{key} must be a number, not a boolean")
+    return float(v)
+
+
 def load_sidecar(path: str) -> SideCar:
     with open(path) as f:
         raw = yaml.safe_load(f) or {}
@@ -60,12 +68,12 @@ def load_sidecar(path: str) -> SideCar:
     if cooling_raw is not None and not isinstance(cooling_raw, dict):
         raise ValueError("cooling must be a mapping")
     cooling = None
-    if cooling_raw:
+    if cooling_raw is not None:   # an explicit `cooling: {}` must fail on missing keys
         cooling = Cooling(
-            indoor_f=float(_require(cooling_raw, "indoor_f", "cooling")),
-            outdoor_1_f=float(_require(cooling_raw, "outdoor_1_f", "cooling")),
-            shgc=float(_require(cooling_raw, "shgc", "cooling")),
-            occupants=float(_require(cooling_raw, "occupants", "cooling")),
+            indoor_f=_require_number(cooling_raw, "indoor_f", "cooling"),
+            outdoor_1_f=_require_number(cooling_raw, "outdoor_1_f", "cooling"),
+            shgc=_require_number(cooling_raw, "shgc", "cooling"),
+            occupants=_require_number(cooling_raw, "occupants", "cooling"),
         )
     sc = SideCar(
         assemblies={k: float(v) for k, v in _require(raw, "assemblies", "root").items()},
