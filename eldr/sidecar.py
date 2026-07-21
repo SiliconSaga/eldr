@@ -48,7 +48,10 @@ def _require_number(d: dict, key: str, ctx: str) -> float:
     v = _require(d, key, ctx)
     if isinstance(v, bool):
         raise ValueError(f"{ctx}.{key} must be a number, not a boolean")
-    return float(v)
+    try:
+        return float(v)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{ctx}.{key} must be a number") from exc
 
 
 def load_sidecar(path: str) -> SideCar:

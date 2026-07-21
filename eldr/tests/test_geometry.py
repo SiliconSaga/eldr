@@ -98,5 +98,5 @@ def test_zip_without_home_xml_errors(tmp_path):
     z = tmp_path / "notahouse.zip"
     with zipfile.ZipFile(z, "w") as zf:
         zf.writestr("other.txt", "nope")
-    with pytest.raises(ValueError, match="Home.xml"):
+    with pytest.raises(ValueError, match=r"Home\.xml"):
         geometry.extract_envelope(str(z))
