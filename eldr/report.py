@@ -39,17 +39,18 @@ def _manual_s_section(s: sizing_mod.SizingResult) -> list[str]:
         "",
         "## Manual S — Equipment Sizing",
         "",
-        f"- Heating load: **{s.load_tons * 12000:,.0f} BTU/hr = {s.load_tons:.1f} tons**",
+        f"- Heating load: **{s.load_tons / sizing_mod.TONS_PER_BTUH:,.0f} BTU/hr "
+        f"= {s.load_tons:.1f} tons**",
         f"- Recommended (smallest size that meets the load): "
-        f"**{s.rec_tons:.1f} ton** ({s.rec_oversize_pct:+.0f}% vs load)",
-        f"- Next size up: **{s.next_tons:.1f} ton** ({s.next_oversize_pct:+.0f}% vs load)",
+        f"**{s.rec_tons:.1f} tons** ({s.rec_oversize_pct:+.0f}% vs load)",
+        f"- Next size up: **{s.next_tons:.1f} tons** ({s.next_oversize_pct:+.0f}% vs load)",
     ]
     if s.existing_tons is None:
         lines.append("- Existing unit: _not provided — add `equipment.existing_tons` to compare_")
     else:
         flag = "" if s.verdict == "well-matched" else " ⚠"
         lines.append(
-            f"- Existing unit: **{s.existing_tons:.1f} ton** → "
+            f"- Existing unit: **{s.existing_tons:.1f} tons** → "
             f"{s.existing_oversize_pct:+.0f}% vs load → **{s.verdict}**{flag}")
         if s.verdict == "oversized":
             lines.append("  - _short-cycling, poor humidity control, added wear_")

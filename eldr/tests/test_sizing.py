@@ -38,10 +38,11 @@ def test_recommended_size_non_boundary():
     assert 22 < r.next_oversize_pct < 25           # 4.0 vs 3.234 ~ +24%
 
 
-def test_zero_load_rejected():
-    # zero load + an existing unit would divide by zero; reject up front
+@pytest.mark.parametrize("total_btuh", [0, -1, float("nan"), float("inf")])
+def test_invalid_load_rejected(total_btuh):
+    # non-positive or non-finite load would divide by zero / poison the result
     with pytest.raises(ValueError, match="load"):
-        sizing.size_equipment(_result(0), _sc(existing_tons=4.0))
+        sizing.size_equipment(_result(total_btuh), _sc(existing_tons=4.0))
 
 
 def test_verdict_oversized():

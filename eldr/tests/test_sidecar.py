@@ -66,6 +66,12 @@ def test_equipment_block_rejects_non_mapping(tmp_path):
         sidecar.load_sidecar(_write(tmp_path, _VALID + "    equipment: 4\n"))
 
 
+def test_equipment_block_rejects_boolean(tmp_path):
+    # YAML true would coerce to 1.0 and masquerade as a real 1-ton unit
+    with pytest.raises(ValueError, match="existing_tons"):
+        sidecar.load_sidecar(_write(tmp_path, _VALID + "    equipment:\n      existing_tons: true\n"))
+
+
 def test_load_sidecar_rejects_bad_values(tmp_path):
     base = """
         design:

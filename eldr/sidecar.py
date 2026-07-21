@@ -41,6 +41,8 @@ def load_sidecar(path: str) -> SideCar:
     elif not isinstance(equipment, dict):
         raise ValueError("equipment must be a mapping")
     existing_tons = equipment.get("existing_tons")
+    if isinstance(existing_tons, bool):   # bool is an int subtype -> float(True)==1.0
+        raise ValueError("equipment.existing_tons must be a finite number > 0 (got a boolean)")
     sc = SideCar(
         assemblies={k: float(v) for k, v in _require(raw, "assemblies", "root").items()},
         design=DesignConditions(
