@@ -1,13 +1,13 @@
-"""Manual S (demo-grade): turn a heating load into an equipment-sizing verdict.
+"""Manual S (demo-grade): turn the design load into an equipment-sizing verdict.
 
-Heating-basis, thresholds hardcoded, but textbook-honest — the recommended size
-is the smallest standard unit that *meets* the load (meet-or-exceed), no logic
-bent to flatter a demo. Not ACCA-certified; cooling (1b) refines it later.
+Sizes on the LARGER of heating and (when present) cooling — the honest Manual S
+basis. Thresholds hardcoded; textbook-honest — the recommended size is the
+smallest standard unit that *meets* the load (meet-or-exceed). Not ACCA-certified.
 """
 from __future__ import annotations
 from dataclasses import dataclass
 import math
-from eldr import loads, sidecar
+from eldr import sidecar
 
 TONS_PER_BTUH = 1.0 / 12000.0     # 12,000 BTU/hr = 1 ton of capacity
 STEP_TONS = 0.5                    # equipment comes in half-ton nominal sizes
@@ -18,6 +18,7 @@ UNDERSIZE_PCT = -10.0            # existing unit below this -> won't hold design
 @dataclass(frozen=True)
 class SizingResult:
     load_tons: float
+    basis: str                      # which load drives sizing: "heating" or "cooling"
     rec_tons: float                 # smallest standard size that meets the load
     rec_oversize_pct: float         # how far rec_tons exceeds the load
     next_tons: float                # one size up from rec_tons
@@ -27,11 +28,20 @@ class SizingResult:
     verdict: str
 
 
-def size_equipment(result: loads.HeatingResult, sc: sidecar.SideCar) -> SizingResult:
-    """Size equipment from a heating load: load -> recommended size, next size, verdict."""
-    load_tons = result.total_btuh * TONS_PER_BTUH
-    if not math.isfinite(load_tons) or load_tons <= 0:
+def size_equipment(heating_btuh: float, sc: sidecar.SideCar,
+                   cooling_btuh: float | None = None) -> SizingResult:
+    """Size on the larger of heating/cooling: load -> recommended size, next size, verdict."""
+    if not math.isfinite(heating_btuh) or heating_btuh <= 0:
         raise ValueError("heating load must be finite and > 0 to size equipment")
+    if cooling_btuh is not None and (not math.isfinite(cooling_btuh) or cooling_btuh <= 0):
+        raise ValueError("cooling load must be finite and > 0 to size equipment")
+    if cooling_btuh is not None and cooling_btuh > heating_btuh:
+        design_btuh, basis = cooling_btuh, "cooling"
+    else:
+        design_btuh, basis = heating_btuh, "heating"
+    load_tons = design_btuh * TONS_PER_BTUH
+    if not math.isfinite(load_tons) or load_tons <= 0:
+        raise ValueError("design load must be finite and > 0 to size equipment")
 
     def oversize(size_tons: float) -> float:
         return (size_tons - load_tons) / load_tons * 100.0
@@ -54,6 +64,7 @@ def size_equipment(result: loads.HeatingResult, sc: sidecar.SideCar) -> SizingRe
 
     return SizingResult(
         load_tons=load_tons,
+        basis=basis,
         rec_tons=rec_tons,
         rec_oversize_pct=oversize(rec_tons),
         next_tons=next_tons,
