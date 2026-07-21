@@ -33,6 +33,45 @@ def test_load_sidecar_missing_key(tmp_path):
         sidecar.load_sidecar(path)
 
 
+_VALID = """
+    design:
+      indoor_heating_f: 70
+      outdoor_heating_99_f: 15
+      supply_air_rise_f: 50
+    infiltration:
+      ach: 0.5
+    assemblies:
+      exterior_wall: 0.09
+"""
+
+
+def test_equipment_block_optional(tmp_path):
+    # No equipment block -> existing_tons is None, still loads fine.
+    sc = sidecar.load_sidecar(_write(tmp_path, _VALID))
+    assert sc.existing_tons is None
+
+
+def test_equipment_block_parsed(tmp_path):
+    sc = sidecar.load_sidecar(_write(tmp_path, _VALID + "    equipment:\n      existing_tons: 4.0\n"))
+    assert sc.existing_tons == 4.0
+
+
+def test_equipment_block_rejects_bad_value(tmp_path):
+    with pytest.raises(ValueError, match="existing_tons"):
+        sidecar.load_sidecar(_write(tmp_path, _VALID + "    equipment:\n      existing_tons: -1\n"))
+
+
+def test_equipment_block_rejects_non_mapping(tmp_path):
+    with pytest.raises(ValueError, match="mapping"):
+        sidecar.load_sidecar(_write(tmp_path, _VALID + "    equipment: 4\n"))
+
+
+def test_equipment_block_rejects_boolean(tmp_path):
+    # YAML true would coerce to 1.0 and masquerade as a real 1-ton unit
+    with pytest.raises(ValueError, match="existing_tons"):
+        sidecar.load_sidecar(_write(tmp_path, _VALID + "    equipment:\n      existing_tons: true\n"))
+
+
 def test_load_sidecar_rejects_bad_values(tmp_path):
     base = """
         design:

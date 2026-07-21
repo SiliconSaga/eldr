@@ -12,3 +12,5 @@ assemblies:                   # U-value, BTU/(hr*ft^2*F), per surface category
   door: 0.40
   ceiling: 0.026              # attic floor, well insulated
   floor: 0.05                 # over unconditioned / slab edge
+equipment:                    # optional — enables the Manual S existing-unit check
+  existing_tons: 4.0          # current unit nominal tonnage (omit to skip the comparison)
