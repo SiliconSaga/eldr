@@ -8,7 +8,9 @@ Turn Eldr's whole-house heating load into an **equipment-sizing recommendation**
 
 ## Scope
 
-Demo-grade. **In:** load → tons → a recommended nominal band → an oversizing verdict against a named existing unit. **Out (YAGNI):** equipment model/database lookup, SEER/HSPF, balance-point / aux-heat math, latent loads, cooling. These are named as future work, not built.
+Demo-grade but **textbook-honest** — no logic bent to flatter the demo. **In:** load → tons → the smallest standard equipment size that *meets* the load (real Manual S: meet-or-exceed), how oversized that pick and the next size up each are, and an oversizing verdict against a named existing unit. **Out (YAGNI):** equipment model/database lookup, SEER/HSPF, balance-point / aux-heat math, latent loads, cooling. Named as future work, not built.
+
+The demo "wow" is **changing the house on paper and re-running** (e.g. drag an exterior wall deep into the backyard → the model jumps in size → the load and recommended equipment jump with it), not any rounding trick.
 
 ## Architecture
 
@@ -16,16 +18,16 @@ One new pure module, one optional side-car block, one report section. No I/O out
 
 ### `eldr/sizing.py`
 
-- `SizingResult` dataclass: `load_tons: float`, `rec_low_tons: float`, `rec_high_tons: float`, `existing_tons: float | None`, `oversize_pct: float | None`, `verdict: str`.
+- `SizingResult` dataclass: `load_tons`, `rec_tons`, `rec_oversize_pct`, `next_tons`, `next_oversize_pct`, `existing_tons: float | None`, `existing_oversize_pct: float | None`, `verdict: str`.
 - `size_equipment(result: loads.HeatingResult, sc: sidecar.SideCar) -> SizingResult`.
 
-Logic (all thresholds hardcoded — demo-reasonable, owner-approved):
-- `TONS_PER_BTUH = 1 / 12000`; `load_tons = result.total_btuh * TONS_PER_BTUH`.
-- Recommended band: `rec_low = ceil(load_tons / 0.5) * 0.5` (nearest half-ton at or above the load), `rec_high = rec_low + 0.5` (one nominal step of headroom).
-- Existing-unit check (only when the side-car names one):
-  - `oversize_pct = (existing_tons - load_tons) / load_tons * 100`.
-  - Verdict bands: `> 15%` → `"oversized"` (short-cycling / humidity / wear); `< -10%` → `"undersized"` (won't hold design temp); else `"well-matched"`.
-- No existing unit → `existing_tons = oversize_pct = None`, `verdict = "no existing unit given"`.
+Logic (thresholds hardcoded — demo-reasonable):
+- `TONS_PER_BTUH = 1 / 12000`; `load_tons = result.total_btuh * TONS_PER_BTUH`. Reject non-finite or `<= 0` load with a `ValueError` before dividing.
+- `oversize(size) = (size - load_tons) / load_tons * 100` — a helper.
+- **Recommended size** `rec_tons = ceil(load_tons / 0.5) * 0.5` — the smallest 0.5-ton standard that meets the load (Manual S: meet-or-exceed). `rec_oversize_pct = oversize(rec_tons)`.
+- **Next size up** `next_tons = rec_tons + 0.5`; `next_oversize_pct = oversize(next_tons)` — the "and one size larger is this far off" line.
+- Existing-unit check (only when the side-car names one): `existing_oversize_pct = oversize(existing_tons)`; verdict `> 15%` → `"oversized"` (short-cycling / humidity / wear), `< -10%` → `"undersized"` (won't hold design temp), else `"well-matched"`.
+- No existing unit → `existing_tons = existing_oversize_pct = None`, `verdict = "no existing unit given"`.
 
 ### Side-car — optional `equipment:` block
 
@@ -38,7 +40,7 @@ equipment:
 
 ### `report.py`
 
-Append a `## Manual S — Equipment Sizing` section after the heating table: load in BTU/hr and tons, the recommended band, and — when present — the existing unit + oversize % + a ⚠ line for a non-"well-matched" verdict. Footer caveat: "Heating-basis, demo estimate; cooling (1b) to follow — final sizing uses the larger of heating/cooling."
+Append a `## Manual S — Equipment Sizing` section after the heating table: load in BTU/hr and tons; the recommended size + its % over load; the next size up + its % over; and — when present — the existing unit + its % + a ⚠ line for a non-"well-matched" verdict. Footer caveat: "Heating-basis, demo estimate; cooling (1b) to follow — final sizing uses the larger of heating/cooling."
 
 ## Data flow
 
@@ -46,7 +48,7 @@ Append a `## Manual S — Equipment Sizing` section after the heating table: loa
 
 ## Testing
 
-`ws test eldr`. New `test_sizing.py`: tons math; each of the three verdict bands; the missing-equipment case. Extend `test_report.py` to assert the Manual S section renders (recommended band present; existing-unit ⚠ line present when a unit is given). Extend `test_sidecar.py` for the optional `equipment` block (present, absent, and invalid-value rejection).
+`ws test eldr`. New `test_sizing.py`: tons math; the recommended (ceil-to-standard) size + next-size-up on a non-boundary load; each of the three verdict bands; the missing-equipment case; a zero/negative-load rejection. Extend `test_report.py` to assert the Manual S section renders (recommended + next-size lines present; existing-unit ⚠ line present when a unit is given). Extend `test_sidecar.py` for the optional `equipment` block (present, absent, non-mapping, and invalid-value rejection).
 
 ## Delivery
 

@@ -35,7 +35,11 @@ def load_sidecar(path: str) -> SideCar:
         raw = yaml.safe_load(f) or {}
     design = _require(raw, "design", "root")
     infil = _require(raw, "infiltration", "root")
-    equipment = raw.get("equipment") or {}
+    equipment = raw.get("equipment")
+    if equipment is None:
+        equipment = {}
+    elif not isinstance(equipment, dict):
+        raise ValueError("equipment must be a mapping")
     existing_tons = equipment.get("existing_tons")
     sc = SideCar(
         assemblies={k: float(v) for k, v in _require(raw, "assemblies", "root").items()},

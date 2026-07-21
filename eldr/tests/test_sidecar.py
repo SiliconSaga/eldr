@@ -61,6 +61,11 @@ def test_equipment_block_rejects_bad_value(tmp_path):
         sidecar.load_sidecar(_write(tmp_path, _VALID + "    equipment:\n      existing_tons: -1\n"))
 
 
+def test_equipment_block_rejects_non_mapping(tmp_path):
+    with pytest.raises(ValueError, match="mapping"):
+        sidecar.load_sidecar(_write(tmp_path, _VALID + "    equipment: 4\n"))
+
+
 def test_load_sidecar_rejects_bad_values(tmp_path):
     base = """
         design:

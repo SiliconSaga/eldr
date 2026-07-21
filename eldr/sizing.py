@@ -1,7 +1,8 @@
 """Manual S (demo-grade): turn a heating load into an equipment-sizing verdict.
 
-Heating-basis, thresholds hardcoded. Not ACCA-certified — the pipeline
-(model -> load -> size) is the point; cooling (1b) refines it later.
+Heating-basis, thresholds hardcoded, but textbook-honest — the recommended size
+is the smallest standard unit that *meets* the load (meet-or-exceed), no logic
+bent to flatter a demo. Not ACCA-certified; cooling (1b) refines it later.
 """
 from __future__ import annotations
 from dataclasses import dataclass
@@ -10,35 +11,54 @@ from eldr import loads, sidecar
 
 TONS_PER_BTUH = 1.0 / 12000.0     # 12,000 BTU/hr = 1 ton of capacity
 STEP_TONS = 0.5                    # equipment comes in half-ton nominal sizes
-OVERSIZE_PCT = 15.0               # above this -> short-cycling risk
-UNDERSIZE_PCT = -10.0            # below this -> won't hold design temp
+OVERSIZE_PCT = 15.0               # existing unit above this -> short-cycling risk
+UNDERSIZE_PCT = -10.0            # existing unit below this -> won't hold design temp
 
 
 @dataclass(frozen=True)
 class SizingResult:
     load_tons: float
-    rec_low_tons: float
-    rec_high_tons: float
+    rec_tons: float                 # smallest standard size that meets the load
+    rec_oversize_pct: float         # how far rec_tons exceeds the load
+    next_tons: float                # one size up from rec_tons
+    next_oversize_pct: float
     existing_tons: float | None
-    oversize_pct: float | None
+    existing_oversize_pct: float | None
     verdict: str
 
 
 def size_equipment(result: loads.HeatingResult, sc: sidecar.SideCar) -> SizingResult:
+    """Size equipment from a heating load: load -> recommended size, next size, verdict."""
     load_tons = result.total_btuh * TONS_PER_BTUH
-    # Bracket the load in a half-ton window: floor to the nearest 0.5, plus one step.
-    rec_low = math.floor(load_tons / STEP_TONS) * STEP_TONS
-    rec_high = rec_low + STEP_TONS
+    if not math.isfinite(load_tons) or load_tons <= 0:
+        raise ValueError("heating load must be finite and > 0 to size equipment")
+
+    def oversize(size_tons: float) -> float:
+        return (size_tons - load_tons) / load_tons * 100.0
+
+    # Manual S: pick the smallest standard (half-ton) size that meets the load.
+    rec_tons = math.ceil(load_tons / STEP_TONS) * STEP_TONS
+    next_tons = rec_tons + STEP_TONS
 
     existing = sc.existing_tons
     if existing is None:
-        return SizingResult(load_tons, rec_low, rec_high, None, None, "no existing unit given")
-
-    oversize_pct = (existing - load_tons) / load_tons * 100.0
-    if oversize_pct > OVERSIZE_PCT:
-        verdict = "oversized"
-    elif oversize_pct < UNDERSIZE_PCT:
-        verdict = "undersized"
+        verdict, existing_pct = "no existing unit given", None
     else:
-        verdict = "well-matched"
-    return SizingResult(load_tons, rec_low, rec_high, existing, oversize_pct, verdict)
+        existing_pct = oversize(existing)
+        if existing_pct > OVERSIZE_PCT:
+            verdict = "oversized"
+        elif existing_pct < UNDERSIZE_PCT:
+            verdict = "undersized"
+        else:
+            verdict = "well-matched"
+
+    return SizingResult(
+        load_tons=load_tons,
+        rec_tons=rec_tons,
+        rec_oversize_pct=oversize(rec_tons),
+        next_tons=next_tons,
+        next_oversize_pct=oversize(next_tons),
+        existing_tons=existing,
+        existing_oversize_pct=existing_pct,
+        verdict=verdict,
+    )
