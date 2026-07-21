@@ -1,9 +1,24 @@
-"""Parse a Home.xml (read-only) into a single-zone envelope of Surfaces."""
+"""Parse a Home.xml (read-only) into a single-zone envelope of Surfaces.
+
+Accepts either an exploded `Home.xml` or a packed `.sh3d` (a ZIP whose
+`Home.xml` entry is authoritative) — so the CLI can point straight at a file
+saved from Sweet Home 3D with no unpack step.
+"""
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
 import xml.etree.ElementTree as ET
+import zipfile
 from eldr import units
+
+
+def _read_home_root(path: str):
+    """Return the <home> XML root from an exploded Home.xml or a packed .sh3d (ZIP)."""
+    if zipfile.is_zipfile(path):
+        with zipfile.ZipFile(path) as z:
+            with z.open("Home.xml") as f:
+                return ET.parse(f).getroot()
+    return ET.parse(path).getroot()
 
 
 @dataclass(frozen=True)
@@ -16,6 +31,9 @@ class Surface:
 class Envelope:
     surfaces: list[Surface]
     volume_ft3: float
+    # window area (ft^2) by compass facing "N"/"E"/"S"/"W" — for orientation-resolved
+    # solar gain. Reflects the home's compass northDirection (0 by default until set).
+    windows_by_orientation: dict = field(default_factory=dict)
 
 
 def _f(el, attr):
@@ -65,15 +83,42 @@ def _aligned_with_wall(opening_angle, w, tol=0.26):
     return abs(math.sin(opening_angle - wall_angle)) <= math.sin(tol)
 
 
-def extract_envelope(home_xml_path: str) -> Envelope:
-    root = ET.parse(home_xml_path).getroot()
+_ORIENTS = ("N", "E", "S", "W")
+
+
+def _window_orientation(w, cx, cy, north_dir):
+    """Compass facing ('N'/'E'/'S'/'W') of a window in wall `w`.
+
+    Its outward normal is the wall normal pointing away from the level centroid
+    (cx, cy). Plan Y is down, so plan-north is -Y and east is +X; the home's
+    compass `north_dir` (radians, clockwise from -Y) rotates that to true north.
+    """
+    ax, ay = _f(w, "xStart"), _f(w, "yStart")
+    bx, by = _f(w, "xEnd"), _f(w, "yEnd")
+    dx, dy = bx - ax, by - ay
+    n1, n2 = (-dy, dx), (dy, -dx)                 # the two wall normals
+    ox, oy = (ax + bx) / 2 - cx, (ay + by) / 2 - cy   # centroid -> wall (outward-ish)
+    nx, ny = n1 if (n1[0] * ox + n1[1] * oy) > 0 else n2
+    plan_bearing = math.atan2(nx, -ny)            # clockwise from plan-north (-Y)
+    deg = math.degrees(plan_bearing - north_dir) % 360.0
+    return _ORIENTS[int((deg + 45.0) // 90.0) % 4]
+
+
+def extract_envelope(home_path: str) -> Envelope:
+    """Parse an exploded Home.xml or a packed .sh3d into a single-zone Envelope."""
+    root = _read_home_root(home_path)
+
+    compass = root.find("compass")
+    north_dir = float(compass.get("northDirection", "0") or "0") if compass is not None else 0.0
 
     levels = {lv.get("id"): lv for lv in root.findall("level")}
     walls_by_level: dict[str, list] = {}
     for w in root.findall("wall"):
         walls_by_level.setdefault(w.get("level"), []).append(w)
+    wall_by_id = {w.get("id"): w for ws in walls_by_level.values() for w in ws}
 
     surfaces: list[Surface] = []
+    windows_by_orientation: dict[str, float] = {}
     # Track net exterior wall area per (level, category) so we can subtract openings.
     wall_area_cm2: dict[str, float] = {}      # key: wall id -> net gross area (cm^2)
     wall_category: dict[str, str] = {}         # wall id -> category
@@ -134,10 +179,15 @@ def extract_envelope(home_xml_path: str) -> Envelope:
         if host is None:
             continue                                # interior opening -> not an envelope surface
         area_cm2 = _f(dw, "width") * _f(dw, "height")
+        area_ft2 = units.sqcm_to_sqft(area_cm2)
         label = (dw.get("catalogId", "") + " " + (dw.get("name") or "")).lower()
         category = "window" if "window" in label else "door"
-        surfaces.append(Surface(category, units.sqcm_to_sqft(area_cm2)))
+        surfaces.append(Surface(category, area_ft2))
         wall_area_cm2[host] = max(0.0, wall_area_cm2[host] - area_cm2)
+        if category == "window":
+            minx, maxx, miny, maxy = level_extent[dw.get("level")]
+            orient = _window_orientation(wall_by_id[host], (minx + maxx) / 2, (miny + maxy) / 2, north_dir)
+            windows_by_orientation[orient] = windows_by_orientation.get(orient, 0.0) + area_ft2
 
     for wid, area_cm2 in wall_area_cm2.items():
         surfaces.append(Surface(wall_category[wid], units.sqcm_to_sqft(area_cm2)))
@@ -154,4 +204,5 @@ def extract_envelope(home_xml_path: str) -> Envelope:
             minx, maxx, miny, maxy = level_extent[lid]
             surfaces.append(Surface(cat, units.sqcm_to_sqft((maxx - minx) * (maxy - miny))))
 
-    return Envelope(surfaces=surfaces, volume_ft3=volume_ft3)
+    return Envelope(surfaces=surfaces, volume_ft3=volume_ft3,
+                    windows_by_orientation=windows_by_orientation)

@@ -72,6 +72,33 @@ def test_equipment_block_rejects_boolean(tmp_path):
         sidecar.load_sidecar(_write(tmp_path, _VALID + "    equipment:\n      existing_tons: true\n"))
 
 
+_COOLING = "    cooling:\n      indoor_f: 75\n      outdoor_1_f: 90\n      shgc: 0.35\n      occupants: 3\n"
+
+
+def test_cooling_block_optional(tmp_path):
+    sc = sidecar.load_sidecar(_write(tmp_path, _VALID))
+    assert sc.cooling is None
+
+
+def test_cooling_block_parsed(tmp_path):
+    sc = sidecar.load_sidecar(_write(tmp_path, _VALID + _COOLING))
+    assert sc.cooling is not None
+    assert sc.cooling.cooling_delta_t == 15      # 90 - 75
+    assert sc.cooling.shgc == 0.35
+
+
+def test_cooling_block_rejects_bad_delta(tmp_path):
+    bad = "    cooling:\n      indoor_f: 90\n      outdoor_1_f: 75\n      shgc: 0.35\n      occupants: 3\n"
+    with pytest.raises(ValueError, match="outdoor_1_f"):
+        sidecar.load_sidecar(_write(tmp_path, _VALID + bad))
+
+
+def test_cooling_block_rejects_bad_shgc(tmp_path):
+    bad = "    cooling:\n      indoor_f: 75\n      outdoor_1_f: 90\n      shgc: 1.5\n      occupants: 3\n"
+    with pytest.raises(ValueError, match="shgc"):
+        sidecar.load_sidecar(_write(tmp_path, _VALID + bad))
+
+
 def test_load_sidecar_rejects_bad_values(tmp_path):
     base = """
         design:

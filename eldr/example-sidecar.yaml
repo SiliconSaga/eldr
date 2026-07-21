@@ -14,3 +14,8 @@ assemblies:                   # U-value, BTU/(hr*ft^2*F), per surface category
   floor: 0.05                 # over unconditioned / slab edge
 equipment:                    # optional — enables the Manual S existing-unit check
   existing_tons: 4.0          # current unit nominal tonnage (omit to skip the comparison)
+cooling:                      # optional — enables the Manual J 1b cooling load
+  indoor_f: 75                # summer setpoint
+  outdoor_1_f: 88             # 1% cooling design temp (NJ-ish placeholder; verify by location)
+  shgc: 0.35                  # window solar heat gain coefficient (double-pane, low-e-ish)
+  occupants: 3                # for internal + latent gains

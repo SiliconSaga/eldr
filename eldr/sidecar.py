@@ -17,11 +17,24 @@ class DesignConditions:
 
 
 @dataclass(frozen=True)
+class Cooling:
+    indoor_f: float
+    outdoor_1_f: float          # 1% cooling design temp
+    shgc: float                 # window solar heat gain coefficient (0..1)
+    occupants: float            # for internal + latent gains
+
+    @property
+    def cooling_delta_t(self) -> float:
+        return self.outdoor_1_f - self.indoor_f
+
+
+@dataclass(frozen=True)
 class SideCar:
     assemblies: dict[str, float]
     design: DesignConditions
     infiltration_ach: float
     existing_tons: float | None = None   # current equipment nominal tonnage (Manual S check)
+    cooling: Cooling | None = None       # optional cooling design conditions (Manual J 1b)
 
 
 def _require(d: dict, key: str, ctx: str):
@@ -43,6 +56,17 @@ def load_sidecar(path: str) -> SideCar:
     existing_tons = equipment.get("existing_tons")
     if isinstance(existing_tons, bool):   # bool is an int subtype -> float(True)==1.0
         raise ValueError("equipment.existing_tons must be a finite number > 0 (got a boolean)")
+    cooling_raw = raw.get("cooling")
+    if cooling_raw is not None and not isinstance(cooling_raw, dict):
+        raise ValueError("cooling must be a mapping")
+    cooling = None
+    if cooling_raw:
+        cooling = Cooling(
+            indoor_f=float(_require(cooling_raw, "indoor_f", "cooling")),
+            outdoor_1_f=float(_require(cooling_raw, "outdoor_1_f", "cooling")),
+            shgc=float(_require(cooling_raw, "shgc", "cooling")),
+            occupants=float(_require(cooling_raw, "occupants", "cooling")),
+        )
     sc = SideCar(
         assemblies={k: float(v) for k, v in _require(raw, "assemblies", "root").items()},
         design=DesignConditions(
@@ -52,6 +76,7 @@ def load_sidecar(path: str) -> SideCar:
         ),
         infiltration_ach=float(_require(infil, "ach", "infiltration")),
         existing_tons=None if existing_tons is None else float(existing_tons),
+        cooling=cooling,
     )
     _validate(sc)
     return sc
@@ -81,3 +106,16 @@ def _validate(sc: SideCar) -> None:
         if not math.isfinite(sc.existing_tons) or sc.existing_tons <= 0:
             raise ValueError(
                 f"equipment.existing_tons must be a finite number > 0 (got {sc.existing_tons!r})")
+    if sc.cooling is not None:
+        c = sc.cooling
+        cnum = {"cooling.indoor_f": c.indoor_f, "cooling.outdoor_1_f": c.outdoor_1_f,
+                "cooling.shgc": c.shgc, "cooling.occupants": c.occupants}
+        for name, val in cnum.items():
+            if not math.isfinite(val):
+                raise ValueError(f"{name} must be a finite number (got {val!r})")
+        if c.cooling_delta_t <= 0:
+            raise ValueError("cooling: outdoor_1_f must exceed indoor_f")
+        if not 0.0 <= c.shgc <= 1.0:
+            raise ValueError("cooling.shgc must be between 0 and 1")
+        if c.occupants < 0:
+            raise ValueError("cooling.occupants must be >= 0")
