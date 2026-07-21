@@ -33,6 +33,14 @@ def test_load_sidecar_missing_key(tmp_path):
         sidecar.load_sidecar(path)
 
 
+def test_outdoor_design_temp_optional(tmp_path):
+    # omitting outdoor_heating_99_f is allowed (it gets looked up from lat/long)
+    body = ("design:\n  indoor_heating_f: 70\n  supply_air_rise_f: 50\n"
+            "infiltration:\n  ach: 0.5\nassemblies:\n  exterior_wall: 0.09\n")
+    sc = sidecar.load_sidecar(_write(tmp_path, body))
+    assert sc.design.outdoor_heating_99_f is None
+
+
 _VALID = """
     design:
       indoor_heating_f: 70

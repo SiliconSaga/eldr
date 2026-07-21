@@ -1,7 +1,8 @@
 # eldr/example-sidecar.yaml — Refrhus starting point; refine as the house is measured.
 design:
   indoor_heating_f: 70        # winter setpoint
-  outdoor_heating_99_f: 15    # 99% heating design temp (NJ-ish placeholder; verify by location)
+  # outdoor_heating_99_f:     # omitted -> looked up from the model's lat/long (nearest station).
+  #                           # Set it here to override with your exact ACCA design temp.
   supply_air_rise_f: 50       # supply-air temperature rise over room, for CFM sizing
 infiltration:
   ach: 0.5                    # whole-house air changes/hour (estimate; blower-door later)
@@ -16,6 +17,6 @@ equipment:                    # optional — enables the Manual S existing-unit 
   existing_tons: 4.0          # current unit nominal tonnage (omit to skip the comparison)
 cooling:                      # optional — enables the Manual J 1b cooling load
   indoor_f: 75                # summer setpoint
-  outdoor_1_f: 88             # 1% cooling design temp (NJ-ish placeholder; verify by location)
+  # outdoor_1_f:              # omitted -> looked up from lat/long (set to override)
   shgc: 0.35                  # window solar heat gain coefficient (double-pane, low-e-ish)
   occupants: 3                # for internal + latent gains

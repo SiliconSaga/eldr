@@ -61,24 +61,37 @@ def test_extract_envelope_areas(tmp_path):
     assert "door" not in cats
 
 
-def test_window_orientation_south(tmp_path):
+def test_window_bearing_south(tmp_path):
     # The window sits on the y=500 wall (bottom of plan). Plan Y is down = south,
-    # so with the default compass (northDirection 0) it faces South.
+    # so with the default compass (northDirection 0) it faces bearing 180 (South).
     p = tmp_path / "Home.xml"
     p.write_text(FIXTURE)
     env = geometry.extract_envelope(str(p))
     from eldr import units
-    assert set(env.windows_by_orientation) == {"S"}
-    assert abs(env.windows_by_orientation["S"] - units.sqcm_to_sqft(100 * 100)) < 1e-6
+    assert set(env.windows_by_bearing) == {180}
+    assert abs(env.windows_by_bearing[180] - units.sqcm_to_sqft(100 * 100)) < 1e-6
 
 
-def test_window_orientation_rotated_compass(tmp_path):
+def test_window_bearing_rotated_compass(tmp_path):
     # northDirection = pi/2 rotates true-north 90deg clockwise, so the bottom
-    # (plan-south) wall's window buckets to East. Guards the rotation sign + radians.
+    # (plan-south) wall's window faces bearing 90 (East). Guards the rotation sign.
     p = tmp_path / "Home.xml"
     p.write_text(_fixture_with_compass("1.57079632679"))
     env = geometry.extract_envelope(str(p))
-    assert set(env.windows_by_orientation) == {"E"}
+    assert set(env.windows_by_bearing) == {90}
+
+
+def test_compass_latlong_to_degrees(tmp_path):
+    # SH3D stores lat/long in radians; eldr exposes degrees.
+    p = tmp_path / "Home.xml"
+    p.write_text(FIXTURE.replace(
+        "<home version='7400' name='t' wallHeight='300'>",
+        "<home version='7400' name='t' wallHeight='300'>\n"
+        "  <compass x='0' y='0' diameter='100' latitude='0.7105963' longitude='-1.2916551'/>",
+    ))
+    env = geometry.extract_envelope(str(p))
+    assert env.latitude is not None and abs(env.latitude - 40.71) < 0.1
+    assert env.longitude is not None and abs(env.longitude - -74.0) < 0.1
 
 
 def test_extract_envelope_from_sh3d(tmp_path):

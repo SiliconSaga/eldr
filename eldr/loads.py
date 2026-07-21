@@ -1,14 +1,18 @@
 """Phase 1 loads: heating (conduction + infiltration) and cooling (Manual J 1b).
 
-Cooling is orientation-resolved: window solar gain is bucketed by compass facing,
-so west/east glass loads more than north. Constants are demo-grade, hardcoded.
+Cooling is orientation-resolved: window solar gain reads each window's exact true
+compass bearing (continuous), so west/east glass loads more than north. Constants
+are demo-grade, hardcoded.
 """
 from __future__ import annotations
 from dataclasses import dataclass
+import bisect
 from eldr import geometry, sidecar, units
 
-# Peak solar heat gain by window facing, BTU/hr per ft^2 of glass (demo-grade).
-SOLAR_HGF = {"N": 20.0, "E": 75.0, "S": 45.0, "W": 75.0}
+# Peak solar heat gain (BTU/hr per ft^2 of glass) at the four cardinal facings;
+# any bearing between them is linearly interpolated (demo-grade).
+_SOLAR_ANCHORS = [(0.0, 20.0), (90.0, 75.0), (180.0, 45.0), (270.0, 75.0), (360.0, 20.0)]
+_OCTANTS = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
 INTERNAL_SENSIBLE_PER_OCCUPANT = 230.0   # BTU/hr sensible per person
 INTERNAL_LATENT_PER_OCCUPANT = 200.0    # BTU/hr latent per person
 APPLIANCE_SENSIBLE_BTUH = 1200.0        # lights + appliances baseline
@@ -53,6 +57,19 @@ def heating_load(env: geometry.Envelope, sc: sidecar.SideCar) -> HeatingResult:
     return HeatingResult(conduction, infiltration, total, cfm, by_category)
 
 
+def solar_hgf(bearing_deg: float) -> float:
+    """Solar heat gain factor (BTU/hr/ft^2) at a true compass bearing, interpolated."""
+    b = bearing_deg % 360.0
+    i = bisect.bisect_right([a for a, _ in _SOLAR_ANCHORS], b) - 1
+    (b0, f0), (b1, f1) = _SOLAR_ANCHORS[i], _SOLAR_ANCHORS[i + 1]
+    return f0 + (f1 - f0) * (b - b0) / (b1 - b0)
+
+
+def octant(bearing_deg: float) -> str:
+    """Nearest 8-point compass label ('N'/'NE'/.../'NW') for a bearing, for display."""
+    return _OCTANTS[int((bearing_deg % 360.0 + 22.5) // 45.0) % 8]
+
+
 def cooling_load(env: geometry.Envelope, sc: sidecar.SideCar) -> CoolingResult:
     """Sensible (conduction + orientation-resolved solar + internal) + latent cooling load."""
     if sc.cooling is None:
@@ -69,10 +86,11 @@ def cooling_load(env: geometry.Envelope, sc: sidecar.SideCar) -> CoolingResult:
         by_category[s.category] = by_category.get(s.category, 0.0) + q
         conduction += q
 
+    # Solar gain per window, using its exact bearing; grouped for display by octant.
     solar = 0.0
-    for orient, area_ft2 in env.windows_by_orientation.items():
-        q = area_ft2 * c.shgc * SOLAR_HGF.get(orient, SOLAR_HGF["S"])
-        by_category[f"solar-{orient}"] = q
+    for bearing, area_ft2 in env.windows_by_bearing.items():
+        q = area_ft2 * c.shgc * solar_hgf(bearing)
+        by_category[f"solar-{octant(bearing)}"] = by_category.get(f"solar-{octant(bearing)}", 0.0) + q
         solar += q
 
     internal_sensible = c.occupants * INTERNAL_SENSIBLE_PER_OCCUPANT + APPLIANCE_SENSIBLE_BTUH
