@@ -8,23 +8,29 @@ import yaml
 @dataclass(frozen=True)
 class DesignConditions:
     indoor_heating_f: float
-    outdoor_heating_99_f: float
+    outdoor_heating_99_f: float | None   # None -> resolved from lat/long (see climate)
     supply_air_rise_f: float
 
     @property
     def heating_delta_t(self) -> float:
+        if self.outdoor_heating_99_f is None:
+            raise ValueError("outdoor_heating_99_f is unresolved — set it in the side-car "
+                             "or provide the model's lat/long for a climate lookup")
         return self.indoor_heating_f - self.outdoor_heating_99_f
 
 
 @dataclass(frozen=True)
 class Cooling:
     indoor_f: float
-    outdoor_1_f: float          # 1% cooling design temp
+    outdoor_1_f: float | None   # 1% cooling design temp; None -> resolved from lat/long
     shgc: float                 # window solar heat gain coefficient (0..1)
     occupants: float            # for internal + latent gains
 
     @property
     def cooling_delta_t(self) -> float:
+        if self.outdoor_1_f is None:
+            raise ValueError("cooling.outdoor_1_f is unresolved — set it in the side-car "
+                             "or provide the model's lat/long for a climate lookup")
         return self.outdoor_1_f - self.indoor_f
 
 
@@ -54,6 +60,13 @@ def _require_number(d: dict, key: str, ctx: str) -> float:
         raise ValueError(f"{ctx}.{key} must be a number") from exc
 
 
+def _optional_number(d: dict, key: str, ctx: str) -> float | None:
+    """Like _require_number but returns None when the key is absent or null."""
+    if d.get(key) is None:
+        return None
+    return _require_number(d, key, ctx)
+
+
 def load_sidecar(path: str) -> SideCar:
     with open(path) as f:
         raw = yaml.safe_load(f) or {}
@@ -74,7 +87,7 @@ def load_sidecar(path: str) -> SideCar:
     if cooling_raw is not None:   # an explicit `cooling: {}` must fail on missing keys
         cooling = Cooling(
             indoor_f=_require_number(cooling_raw, "indoor_f", "cooling"),
-            outdoor_1_f=_require_number(cooling_raw, "outdoor_1_f", "cooling"),
+            outdoor_1_f=_optional_number(cooling_raw, "outdoor_1_f", "cooling"),
             shgc=_require_number(cooling_raw, "shgc", "cooling"),
             occupants=_require_number(cooling_raw, "occupants", "cooling"),
         )
@@ -82,7 +95,7 @@ def load_sidecar(path: str) -> SideCar:
         assemblies={k: float(v) for k, v in _require(raw, "assemblies", "root").items()},
         design=DesignConditions(
             indoor_heating_f=float(_require(design, "indoor_heating_f", "design")),
-            outdoor_heating_99_f=float(_require(design, "outdoor_heating_99_f", "design")),
+            outdoor_heating_99_f=_optional_number(design, "outdoor_heating_99_f", "design"),
             supply_air_rise_f=float(_require(design, "supply_air_rise_f", "design")),
         ),
         infiltration_ach=float(_require(infil, "ach", "infiltration")),
@@ -96,17 +109,18 @@ def load_sidecar(path: str) -> SideCar:
 def _validate(sc: SideCar) -> None:
     numeric = {
         "design.indoor_heating_f": sc.design.indoor_heating_f,
-        "design.outdoor_heating_99_f": sc.design.outdoor_heating_99_f,
         "design.supply_air_rise_f": sc.design.supply_air_rise_f,
         "infiltration.ach": sc.infiltration_ach,
     }
+    if sc.design.outdoor_heating_99_f is not None:   # optional — may be looked up
+        numeric["design.outdoor_heating_99_f"] = sc.design.outdoor_heating_99_f
     numeric.update({f"assemblies.{k}": v for k, v in sc.assemblies.items()})
     for name, val in numeric.items():
         if not math.isfinite(val):
             raise ValueError(f"{name} must be a finite number (got {val!r})")
     if sc.design.supply_air_rise_f <= 0:
         raise ValueError("design.supply_air_rise_f must be > 0 (it sizes CFM)")
-    if sc.design.heating_delta_t <= 0:
+    if sc.design.outdoor_heating_99_f is not None and sc.design.heating_delta_t <= 0:
         raise ValueError("design: indoor_heating_f must exceed outdoor_heating_99_f")
     if sc.infiltration_ach < 0:
         raise ValueError("infiltration.ach must be >= 0")
@@ -119,12 +133,14 @@ def _validate(sc: SideCar) -> None:
                 f"equipment.existing_tons must be a finite number > 0 (got {sc.existing_tons!r})")
     if sc.cooling is not None:
         c = sc.cooling
-        cnum = {"cooling.indoor_f": c.indoor_f, "cooling.outdoor_1_f": c.outdoor_1_f,
-                "cooling.shgc": c.shgc, "cooling.occupants": c.occupants}
+        cnum = {"cooling.indoor_f": c.indoor_f, "cooling.shgc": c.shgc,
+                "cooling.occupants": c.occupants}
+        if c.outdoor_1_f is not None:   # optional — may be looked up
+            cnum["cooling.outdoor_1_f"] = c.outdoor_1_f
         for name, val in cnum.items():
             if not math.isfinite(val):
                 raise ValueError(f"{name} must be a finite number (got {val!r})")
-        if c.cooling_delta_t <= 0:
+        if c.outdoor_1_f is not None and c.cooling_delta_t <= 0:
             raise ValueError("cooling: outdoor_1_f must exceed indoor_f")
         if not 0.0 <= c.shgc <= 1.0:
             raise ValueError("cooling.shgc must be between 0 and 1")

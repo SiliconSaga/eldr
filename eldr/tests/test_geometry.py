@@ -61,24 +61,70 @@ def test_extract_envelope_areas(tmp_path):
     assert "door" not in cats
 
 
-def test_window_orientation_south(tmp_path):
+def test_window_bearing_south(tmp_path):
     # The window sits on the y=500 wall (bottom of plan). Plan Y is down = south,
-    # so with the default compass (northDirection 0) it faces South.
+    # so with the default compass (northDirection 0) it faces bearing 180 (South).
     p = tmp_path / "Home.xml"
     p.write_text(FIXTURE)
     env = geometry.extract_envelope(str(p))
     from eldr import units
-    assert set(env.windows_by_orientation) == {"S"}
-    assert abs(env.windows_by_orientation["S"] - units.sqcm_to_sqft(100 * 100)) < 1e-6
+    (bearing, area), = env.windows_by_bearing.items()   # exactly one wall has glass
+    assert abs(bearing - 180) < 1e-6
+    assert abs(area - units.sqcm_to_sqft(100 * 100)) < 1e-6
 
 
-def test_window_orientation_rotated_compass(tmp_path):
+def test_window_bearing_rotated_compass(tmp_path):
     # northDirection = pi/2 rotates true-north 90deg clockwise, so the bottom
-    # (plan-south) wall's window buckets to East. Guards the rotation sign + radians.
+    # (plan-south) wall's window faces bearing 90 (East). Guards the rotation sign.
     p = tmp_path / "Home.xml"
     p.write_text(_fixture_with_compass("1.57079632679"))
     env = geometry.extract_envelope(str(p))
-    assert set(env.windows_by_orientation) == {"E"}
+    keys = list(env.windows_by_bearing)
+    assert len(keys) == 1
+    assert abs(keys[0] - 90) < 1e-6
+
+
+def test_compass_latlong_to_degrees(tmp_path):
+    # SH3D stores lat/long in radians; eldr exposes degrees.
+    p = tmp_path / "Home.xml"
+    p.write_text(FIXTURE.replace(
+        "<home version='7400' name='t' wallHeight='300'>",
+        "<home version='7400' name='t' wallHeight='300'>\n"
+        "  <compass x='0' y='0' diameter='100' latitude='0.7105963' longitude='-1.2916551'/>",
+    ))
+    env = geometry.extract_envelope(str(p))
+    assert env.latitude is not None and abs(env.latitude - 40.71) < 0.1
+    assert env.longitude is not None and abs(env.longitude - -74.0) < 0.1
+
+
+@pytest.mark.parametrize("coords", [
+    "latitude='3.0' longitude='0'",     # lat ~172deg -> out of range
+    "latitude='0' longitude='4.0'",     # lon ~229deg -> out of range
+    "latitude='nan' longitude='0'",     # non-finite latitude
+    "latitude='0' longitude='inf'",     # non-finite longitude
+])
+def test_invalid_compass_coords_rejected(tmp_path, coords):
+    p = tmp_path / "Home.xml"
+    p.write_text(FIXTURE.replace(
+        "<home version='7400' name='t' wallHeight='300'>",
+        "<home version='7400' name='t' wallHeight='300'>\n"
+        f"  <compass x='0' y='0' diameter='100' {coords}/>",
+    ))
+    with pytest.raises(ValueError, match="itude"):   # latitude or longitude
+        geometry.extract_envelope(str(p))
+
+
+def test_empty_compass_coords_treated_as_absent(tmp_path):
+    # empty lat/long attrs are treated as absent (like northDirection), not an error
+    p = tmp_path / "Home.xml"
+    p.write_text(FIXTURE.replace(
+        "<home version='7400' name='t' wallHeight='300'>",
+        "<home version='7400' name='t' wallHeight='300'>\n"
+        "  <compass x='0' y='0' diameter='100' latitude='' longitude=''/>",
+    ))
+    env = geometry.extract_envelope(str(p))   # no crash
+    assert env.latitude is None
+    assert env.longitude is None
 
 
 def test_extract_envelope_from_sh3d(tmp_path):

@@ -1,19 +1,28 @@
 """Render a HeatingResult (and optional Manual S sizing) as a Markdown report."""
 from __future__ import annotations
-from eldr import loads, sidecar, sizing as sizing_mod
+from eldr import loads, sidecar, sizing as sizing_mod, climate as climate_mod
 
 
 def render_heating(result: loads.HeatingResult, sc: sidecar.SideCar,
                    sizing: sizing_mod.SizingResult | None = None,
-                   cooling: loads.CoolingResult | None = None) -> str:
+                   cooling: loads.CoolingResult | None = None,
+                   station: climate_mod.Station | None = None) -> str:
     """Render the heating load (and optional cooling + Manual S sizing) as Markdown."""
     d = sc.design
+    if d.outdoor_heating_99_f is None:
+        raise ValueError("report requires a resolved design.outdoor_heating_99_f "
+                         "(run climate resolution or set it in the side-car)")
     lines = [
         "# Eldr — Heating Load (Phase 1, whole-house)",
         "",
         f"- Indoor / 99% outdoor design: **{d.indoor_heating_f:.0f}°F / {d.outdoor_heating_99_f:.0f}°F** "
         f"(ΔT = {d.heating_delta_t:.0f}°F)",
         f"- Infiltration: **{sc.infiltration_ach:.2f} ACH**",
+    ]
+    if station is not None:
+        lines.append(f"- Design temps from nearest station: **{station.name}** "
+                     f"(lat/long from the model — approximate; set your ACCA station for accuracy)")
+    lines += [
         "",
         "| Component | Load (BTU/hr) |",
         "|---|---:|",
@@ -41,6 +50,8 @@ def _cooling_section(c: loads.CoolingResult, sc: sidecar.SideCar) -> list[str]:
     cd = sc.cooling
     if cd is None:
         raise ValueError("cooling report requires cooling conditions in the side-car")
+    if cd.outdoor_1_f is None:
+        raise ValueError("cooling report requires a resolved cooling.outdoor_1_f")
     lines = [
         "",
         "## Eldr — Cooling Load (Manual J 1b, whole-house)",
@@ -60,8 +71,8 @@ def _cooling_section(c: loads.CoolingResult, sc: sidecar.SideCar) -> list[str]:
         "",
         f"**Supply airflow:** {c.cfm:,.0f} CFM",
         "",
-        "_Solar is orientation-resolved (`solar-N/E/S/W`). Orientation reflects the "
-        "model's compass `northDirection` — set it from the survey for true facing._",
+        "_Solar reads each window's exact bearing (grouped for display by nearest "
+        "8-point, e.g. `solar-SW`), from the model's compass `northDirection`._",
     ]
     return lines
 

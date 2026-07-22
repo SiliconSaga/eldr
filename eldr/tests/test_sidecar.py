@@ -33,6 +33,28 @@ def test_load_sidecar_missing_key(tmp_path):
         sidecar.load_sidecar(path)
 
 
+def test_outdoor_design_temp_optional(tmp_path):
+    # omitting outdoor design temps is allowed (they get looked up from lat/long)
+    body = ("design:\n  indoor_heating_f: 70\n  supply_air_rise_f: 50\n"
+            "infiltration:\n  ach: 0.5\nassemblies:\n  exterior_wall: 0.09\n"
+            "cooling:\n  indoor_f: 75\n  shgc: 0.35\n  occupants: 3\n")
+    sc = sidecar.load_sidecar(_write(tmp_path, body))
+    assert sc.design.outdoor_heating_99_f is None
+    assert sc.cooling.outdoor_1_f is None
+
+
+def test_delta_properties_raise_when_unresolved(tmp_path):
+    # a resolved-before-loads invariant: the delta properties fail clearly, not TypeError
+    body = ("design:\n  indoor_heating_f: 70\n  supply_air_rise_f: 50\n"
+            "infiltration:\n  ach: 0.5\nassemblies:\n  exterior_wall: 0.09\n"
+            "cooling:\n  indoor_f: 75\n  shgc: 0.35\n  occupants: 3\n")
+    sc = sidecar.load_sidecar(_write(tmp_path, body))
+    with pytest.raises(ValueError, match="outdoor_heating_99_f"):
+        _ = sc.design.heating_delta_t
+    with pytest.raises(ValueError, match="outdoor_1_f"):
+        _ = sc.cooling.cooling_delta_t
+
+
 _VALID = """
     design:
       indoor_heating_f: 70

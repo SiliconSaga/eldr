@@ -49,9 +49,14 @@ class Surface:
 class Envelope:
     surfaces: list[Surface]
     volume_ft3: float
-    # window area (ft^2) by compass facing "N"/"E"/"S"/"W" — for orientation-resolved
-    # solar gain. Reflects the home's compass northDirection (0 by default until set).
-    windows_by_orientation: dict[str, float] = field(default_factory=dict)
+    # window area (ft^2) keyed by exact true compass bearing in degrees (0=N, 90=E,
+    # clockwise). Continuous — solar gain reads the exact bearing, not a bucket;
+    # windows on one wall share the identical computed bearing so they group cleanly.
+    # Reflects the home's compass northDirection (0 by default until set from a survey).
+    windows_by_bearing: dict[float, float] = field(default_factory=dict)
+    # decimal degrees from the home's compass (N positive, E positive); None if absent.
+    latitude: float | None = None
+    longitude: float | None = None
 
 
 def _f(el, attr):
@@ -101,11 +106,8 @@ def _aligned_with_wall(opening_angle, w, tol=0.26):
     return abs(math.sin(opening_angle - wall_angle)) <= math.sin(tol)
 
 
-_ORIENTS = ("N", "E", "S", "W")
-
-
-def _window_orientation(w, cx, cy, north_dir):
-    """Compass facing ('N'/'E'/'S'/'W') of a window in wall `w`.
+def _window_bearing(w, cx, cy, north_dir):
+    """True compass bearing (degrees, 0=N clockwise) a window in wall `w` faces.
 
     Its outward normal is the wall normal pointing away from the level centroid
     (cx, cy). Plan Y is down, so plan-north is -Y and east is +X; the home's
@@ -118,8 +120,7 @@ def _window_orientation(w, cx, cy, north_dir):
     ox, oy = (ax + bx) / 2 - cx, (ay + by) / 2 - cy   # centroid -> wall (outward-ish)
     nx, ny = n1 if (n1[0] * ox + n1[1] * oy) > 0 else n2
     plan_bearing = math.atan2(nx, -ny)            # clockwise from plan-north (-Y)
-    deg = math.degrees(plan_bearing - north_dir) % 360.0
-    return _ORIENTS[int((deg + 45.0) // 90.0) % 4]
+    return math.degrees(plan_bearing - north_dir) % 360.0
 
 
 def extract_envelope(home_path: str) -> Envelope:
@@ -128,6 +129,17 @@ def extract_envelope(home_path: str) -> Envelope:
 
     compass = root.find("compass")
     north_dir = float(compass.get("northDirection", "0") or "0") if compass is not None else 0.0
+    # SH3D stores compass latitude/longitude in radians; expose them in degrees.
+    latitude = longitude = None
+    if compass is not None:
+        # `or None` treats empty-string attrs as absent, matching northDirection above.
+        lat_rad, lon_rad = compass.get("latitude") or None, compass.get("longitude") or None
+        latitude = math.degrees(float(lat_rad)) if lat_rad is not None else None
+        longitude = math.degrees(float(lon_rad)) if lon_rad is not None else None
+        if latitude is not None and (not math.isfinite(latitude) or not -90 <= latitude <= 90):
+            raise ValueError("compass latitude must be finite and between -90 and 90")
+        if longitude is not None and (not math.isfinite(longitude) or not -180 <= longitude <= 180):
+            raise ValueError("compass longitude must be finite and between -180 and 180")
 
     levels = {lv.get("id"): lv for lv in root.findall("level")}
     walls_by_level: dict[str, list] = {}
@@ -136,7 +148,7 @@ def extract_envelope(home_path: str) -> Envelope:
     wall_by_id = {w.get("id"): w for ws in walls_by_level.values() for w in ws}
 
     surfaces: list[Surface] = []
-    windows_by_orientation: dict[str, float] = {}
+    windows_by_bearing: dict[float, float] = {}
     # Track net exterior wall area per (level, category) so we can subtract openings.
     wall_area_cm2: dict[str, float] = {}      # key: wall id -> net gross area (cm^2)
     wall_category: dict[str, str] = {}         # wall id -> category
@@ -204,8 +216,8 @@ def extract_envelope(home_path: str) -> Envelope:
         wall_area_cm2[host] = max(0.0, wall_area_cm2[host] - area_cm2)
         if category == "window":
             minx, maxx, miny, maxy = level_extent[dw.get("level")]
-            orient = _window_orientation(wall_by_id[host], (minx + maxx) / 2, (miny + maxy) / 2, north_dir)
-            windows_by_orientation[orient] = windows_by_orientation.get(orient, 0.0) + area_ft2
+            key = _window_bearing(wall_by_id[host], (minx + maxx) / 2, (miny + maxy) / 2, north_dir)
+            windows_by_bearing[key] = windows_by_bearing.get(key, 0.0) + area_ft2
 
     for wid, area_cm2 in wall_area_cm2.items():
         surfaces.append(Surface(wall_category[wid], units.sqcm_to_sqft(area_cm2)))
@@ -223,4 +235,5 @@ def extract_envelope(home_path: str) -> Envelope:
             surfaces.append(Surface(cat, units.sqcm_to_sqft((maxx - minx) * (maxy - miny))))
 
     return Envelope(surfaces=surfaces, volume_ft3=volume_ft3,
-                    windows_by_orientation=windows_by_orientation)
+                    windows_by_bearing=windows_by_bearing,
+                    latitude=latitude, longitude=longitude)
