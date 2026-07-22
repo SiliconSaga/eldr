@@ -114,6 +114,19 @@ def test_invalid_compass_coords_rejected(tmp_path, coords):
         geometry.extract_envelope(str(p))
 
 
+def test_empty_compass_coords_treated_as_absent(tmp_path):
+    # empty lat/long attrs are treated as absent (like northDirection), not an error
+    p = tmp_path / "Home.xml"
+    p.write_text(FIXTURE.replace(
+        "<home version='7400' name='t' wallHeight='300'>",
+        "<home version='7400' name='t' wallHeight='300'>\n"
+        "  <compass x='0' y='0' diameter='100' latitude='' longitude=''/>",
+    ))
+    env = geometry.extract_envelope(str(p))   # no crash
+    assert env.latitude is None
+    assert env.longitude is None
+
+
 def test_extract_envelope_from_sh3d(tmp_path):
     # A .sh3d is a ZIP whose Home.xml is authoritative — eldr reads it directly.
     sh3d = tmp_path / "House.sh3d"

@@ -148,7 +148,7 @@ def extract_envelope(home_path: str) -> Envelope:
     wall_by_id = {w.get("id"): w for ws in walls_by_level.values() for w in ws}
 
     surfaces: list[Surface] = []
-    windows_by_bearing: dict[int, float] = {}
+    windows_by_bearing: dict[float, float] = {}
     # Track net exterior wall area per (level, category) so we can subtract openings.
     wall_area_cm2: dict[str, float] = {}      # key: wall id -> net gross area (cm^2)
     wall_category: dict[str, str] = {}         # wall id -> category
