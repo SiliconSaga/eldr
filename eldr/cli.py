@@ -2,7 +2,7 @@
 from __future__ import annotations
 import argparse
 from dataclasses import replace
-from eldr import geometry, sidecar, loads, report, sizing, climate
+from eldr import geometry, sidecar, loads, report, sizing, climate, ductd, ductmodel
 
 
 def _resolve_climate(sc: sidecar.SideCar, env: geometry.Envelope):
@@ -34,7 +34,18 @@ def run(home_path: str, sidecar_path: str) -> str:
     cooling = loads.cooling_load(env, sc) if sc.cooling is not None else None
     cooling_btuh = cooling.total_btuh if cooling is not None else None
     s = sizing.size_equipment(heating.total_btuh, sc, cooling_btuh=cooling_btuh)
-    return report.render_heating(heating, sc, sizing=s, cooling=cooling, station=station)
+
+    # Prefer model-derived per-room ducts (Manual J 1c) whenever the model has rooms;
+    # otherwise fall back to the side-car's hand-listed runs (if any).
+    ducts, duct_plan = None, None
+    if any(r.conditioned for r in env.rooms):
+        duct_plan = ductmodel.plan_ducts(env, sc)
+        ducts = ductmodel.size_from_plan(duct_plan)
+    elif sc.ducts is not None and sc.ducts.runs:
+        ducts = ductd.size_ducts([(r.name, r.cfm) for r in sc.ducts.runs],
+                                 friction_rate=sc.ducts.friction_rate)
+    return report.render_heating(heating, sc, sizing=s, cooling=cooling, station=station,
+                                 ducts=ducts, duct_plan=duct_plan)
 
 
 def main(argv=None):

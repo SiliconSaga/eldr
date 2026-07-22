@@ -38,16 +38,33 @@ class CoolingResult:
     by_category: dict[str, float]      # conduction cats + solar-<orient> + internal
 
 
+@dataclass(frozen=True)
+class RoomLoad:
+    """Per-room (Manual J 1c) loads and design airflow."""
+    name: str
+    level_id: str
+    conditioned: bool
+    heating_btuh: float
+    cooling_btuh: float                # sensible (the CFM-sizing basis)
+    cfm: float
+
+
+def _conduction(surfaces, assemblies, dt):
+    """UA·ΔT conduction over a surface list; returns (total, by_category)."""
+    by_category: dict[str, float] = {}
+    total = 0.0
+    for s in surfaces:
+        if s.category not in assemblies:
+            raise KeyError(f"no assembly U-value for category '{s.category}' in side-car")
+        q = assemblies[s.category] * s.area_ft2 * dt
+        by_category[s.category] = by_category.get(s.category, 0.0) + q
+        total += q
+    return total, by_category
+
+
 def heating_load(env: geometry.Envelope, sc: sidecar.SideCar) -> HeatingResult:
     dt = sc.design.heating_delta_t
-    by_category: dict[str, float] = {}
-    conduction = 0.0
-    for s in env.surfaces:
-        if s.category not in sc.assemblies:
-            raise KeyError(f"no assembly U-value for category '{s.category}' in side-car")
-        q = sc.assemblies[s.category] * s.area_ft2 * dt
-        by_category[s.category] = by_category.get(s.category, 0.0) + q
-        conduction += q
+    conduction, by_category = _conduction(env.surfaces, sc.assemblies, dt)
 
     infil_cfm = sc.infiltration_ach * env.volume_ft3 / 60.0
     infiltration = units.SENSIBLE_FACTOR * infil_cfm * dt
@@ -76,15 +93,7 @@ def cooling_load(env: geometry.Envelope, sc: sidecar.SideCar) -> CoolingResult:
         raise ValueError("cooling requires a `cooling` block in the side-car")
     c = sc.cooling
     dt = c.cooling_delta_t
-    by_category: dict[str, float] = {}
-
-    conduction = 0.0
-    for s in env.surfaces:
-        if s.category not in sc.assemblies:
-            raise KeyError(f"no assembly U-value for category '{s.category}' in side-car")
-        q = sc.assemblies[s.category] * s.area_ft2 * dt
-        by_category[s.category] = by_category.get(s.category, 0.0) + q
-        conduction += q
+    conduction, by_category = _conduction(env.surfaces, sc.assemblies, dt)
 
     # Solar gain per window, using its exact bearing; grouped for display by octant.
     solar = 0.0
@@ -106,3 +115,41 @@ def cooling_load(env: geometry.Envelope, sc: sidecar.SideCar) -> CoolingResult:
     total = sensible + latent
     cfm = sensible / (units.SENSIBLE_FACTOR * COOLING_SUPPLY_DT_F)
     return CoolingResult(sensible, latent, total, cfm, by_category)
+
+
+def per_room_loads(env: geometry.Envelope, sc: sidecar.SideCar) -> list[RoomLoad]:
+    """Per-room heating + (optional) cooling-sensible loads and design CFM (Manual J 1c).
+
+    Each room's load comes from the exterior walls, windows, doors and ceiling/floor
+    attributed to *it* (plus infiltration on its own volume). Design CFM is the larger
+    of the heating and cooling airflows — each sized at its own supply-air ΔT — so a
+    duct is sized for the worse mode. Internal (occupant + appliance) sensible gain is
+    shared across conditioned rooms by floor area; unconditioned rooms get none.
+    """
+    heat_dt = sc.design.heating_delta_t
+    cool = sc.cooling
+    cond_area = sum(r.area_ft2 for r in env.rooms if r.conditioned) or 1.0
+    internal_total = (cool.occupants * INTERNAL_SENSIBLE_PER_OCCUPANT
+                      + APPLIANCE_SENSIBLE_BTUH) if cool is not None else 0.0
+
+    out: list[RoomLoad] = []
+    for r in env.rooms:
+        h_cond, _ = _conduction(r.surfaces, sc.assemblies, heat_dt)
+        h_infil = units.SENSIBLE_FACTOR * (sc.infiltration_ach * r.volume_ft3 / 60.0) * heat_dt
+        heating = h_cond + h_infil
+
+        cooling = 0.0
+        if cool is not None:
+            c_cond, _ = _conduction(r.surfaces, sc.assemblies, cool.cooling_delta_t)
+            solar = sum(area * cool.shgc * solar_hgf(b)
+                        for b, area in r.windows_by_bearing.items())
+            internal = internal_total * (r.area_ft2 / cond_area) if r.conditioned else 0.0
+            cooling = c_cond + solar + internal
+
+        cfm_heat = heating / (units.SENSIBLE_FACTOR * sc.design.supply_air_rise_f)
+        cfm_cool = (cooling / (units.SENSIBLE_FACTOR * COOLING_SUPPLY_DT_F)
+                    if cool is not None else 0.0)
+        out.append(RoomLoad(name=r.name, level_id=r.level_id, conditioned=r.conditioned,
+                            heating_btuh=heating, cooling_btuh=cooling,
+                            cfm=max(cfm_heat, cfm_cool)))
+    return out

@@ -1,12 +1,15 @@
 """Render a HeatingResult (and optional Manual S sizing) as a Markdown report."""
 from __future__ import annotations
-from eldr import loads, sidecar, sizing as sizing_mod, climate as climate_mod
+from eldr import (loads, sidecar, sizing as sizing_mod, climate as climate_mod,
+                  ductd as ductd_mod, ductmodel as ductmodel_mod)
 
 
 def render_heating(result: loads.HeatingResult, sc: sidecar.SideCar,
                    sizing: sizing_mod.SizingResult | None = None,
                    cooling: loads.CoolingResult | None = None,
-                   station: climate_mod.Station | None = None) -> str:
+                   station: climate_mod.Station | None = None,
+                   ducts: ductd_mod.DuctResult | None = None,
+                   duct_plan: ductmodel_mod.DuctPlan | None = None) -> str:
     """Render the heating load (and optional cooling + Manual S sizing) as Markdown."""
     d = sc.design
     if d.outdoor_heating_99_f is None:
@@ -42,7 +45,87 @@ def render_heating(result: loads.HeatingResult, sc: sidecar.SideCar,
         lines += _cooling_section(cooling, sc)
     if sizing is not None:
         lines += _manual_s_section(sizing)
+    if duct_plan is not None:
+        lines += _per_room_section(duct_plan, result.cfm)
+    if ducts is not None:
+        lines += _duct_section(ducts, duct_plan)
     return "\n".join(lines)
+
+
+def _per_room_section(plan: ductmodel_mod.DuctPlan, whole_house_cfm: float) -> list[str]:
+    """Build the Manual J 1c per-room table (heating, cooling-sensible, design CFM)."""
+    served = [rl for rl in plan.room_loads
+              if rl.conditioned and rl.cfm >= ductmodel_mod.MIN_RUN_CFM]
+    served.sort(key=lambda rl: rl.cfm, reverse=True)
+    room_cfm = sum(rl.cfm for rl in served)
+    lines = [
+        "",
+        "## Eldr — Per-Room Loads (Manual J 1c)",
+        "",
+        "| Room | Heating (BTU/hr) | Cooling sens. (BTU/hr) | Design CFM |",
+        "|---|---:|---:|---:|",
+    ]
+    for rl in served:
+        lines.append(f"| {rl.name} | {rl.heating_btuh:,.0f} | {rl.cooling_btuh:,.0f} "
+                     f"| {rl.cfm:,.0f} |")
+    lines.append(f"| **{len(served)} rooms** | | | **{room_cfm:,.0f}** |")
+    lines += [
+        "",
+        f"_Each room's load is from the exterior walls, windows, doors and ceiling/floor "
+        f"attributed to it, plus infiltration on its own volume; design CFM is the larger "
+        f"of heating/cooling airflow. Rooms sum to **{room_cfm:,.0f} CFM** vs the whole-house "
+        f"**{whole_house_cfm:,.0f} CFM** — the gap is floor area not yet drawn as rooms "
+        f"(halls, stairs, unfinished space). Draw more rooms and it closes._",
+    ]
+    return lines
+
+
+def _duct_section(dr: ductd_mod.DuctResult,
+                  plan: ductmodel_mod.DuctPlan | None = None) -> list[str]:
+    """Build the Manual D markdown lines (round duct size + velocity, and length if known)."""
+    has_len = any(r.length_ft is not None for r in dr.runs)
+    if plan is not None and plan.derived:
+        fr_note = (f"**{dr.friction_rate:.3g} in.wc / 100 ft** "
+                   f"(derived: {plan.available_static_pressure:.2g} in.wc ÷ "
+                   f"{plan.worst_length_ft:,.0f} ft worst run)")
+    else:
+        fr_note = f"**{dr.friction_rate:.3g} in.wc / 100 ft** (side-car default)"
+    lines = [
+        "",
+        "## Manual D — Duct Sizing (round, equal-friction)",
+        "",
+        f"- Friction rate: {fr_note}",
+    ]
+    if plan is not None and plan.unit is not None:
+        lines.append(f"- Air handler: **{plan.unit.name}** — run length = unit → room "
+                     f"(Manhattan + vertical) × fitting factor.")
+    elif plan is not None:
+        lines.append(f"- _No unit found (searched furniture for “{plan.unit_name}”) — "
+                     f"place one to get run lengths and a derived friction rate._")
+    if has_len:
+        lines += ["", "| Run | CFM | Exact dia | Duct | Velocity | Length | Drop |",
+                  "|---|---:|---:|---:|---:|---:|---:|"]
+        for r in dr.runs:
+            flag = " ⚠" if r.flag == "high" else ""
+            length = "—" if r.length_ft is None else f"{r.length_ft:,.0f} ft"
+            drop = "—" if r.pressure_drop_inwc is None else f"{r.pressure_drop_inwc:.3f}″"
+            lines.append(f"| {r.name} | {r.cfm:,.0f} | {r.exact_dia_in:.1f}″ | "
+                         f"**{r.standard_dia_in}″** | {r.velocity_fpm:,.0f} fpm{flag} "
+                         f"| {length} | {drop} |")
+    else:
+        lines += ["", "| Run | CFM | Exact dia | Duct | Velocity |",
+                  "|---|---:|---:|---:|---:|"]
+        for r in dr.runs:
+            flag = " ⚠" if r.flag == "high" else ""
+            lines.append(f"| {r.name} | {r.cfm:,.0f} | {r.exact_dia_in:.1f}″ | "
+                         f"**{r.standard_dia_in}″** | {r.velocity_fpm:,.0f} fpm{flag} |")
+    lines += [
+        "",
+        "_Round duct, equal-friction, demo-grade. Total effective length uses a fitting "
+        "fudge factor, not true fitting equivalent lengths; a full Manual D adds those and "
+        "rectangular/oval sizing via equivalent diameter._",
+    ]
+    return lines
 
 
 def _cooling_section(c: loads.CoolingResult, sc: sidecar.SideCar) -> list[str]:

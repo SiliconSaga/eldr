@@ -101,3 +101,54 @@ def test_cooling_solar_groups_by_octant():
     assert "solar-SE" in r.by_category
     assert abs(r.by_category["solar-SE"]
                - (50 * 0.4 * loads.solar_hgf(130) + 50 * 0.4 * loads.solar_hgf(140))) < 1e-6
+
+
+def _room(name, surfaces, volume, conditioned=True, windows=None, level="L1"):
+    return geometry.Room(name=name, level_id=level, area_ft2=200.0, centroid_cm=(0.0, 0.0),
+                         conditioned=conditioned, surfaces=surfaces, volume_ft3=volume,
+                         windows_by_bearing=windows or {})
+
+
+def test_per_room_heating_matches_core():
+    # a room's heating load is conduction over its surfaces + infiltration on its volume
+    wall = _room("Wall", [geometry.Surface("exterior_wall", 1000.0)], 12000.0)
+    env = geometry.Envelope(surfaces=[], volume_ft3=0.0, rooms=[wall])
+    (rl,) = loads.per_room_loads(env, _sc())
+    dt = 50.0
+    conduction = 0.1 * 1000 * dt                        # 5000
+    infil = 1.08 * (0.5 * 12000 / 60.0) * dt            # 5400
+    assert abs(rl.heating_btuh - (conduction + infil)) < 1e-6
+    # heating-only side-car -> cooling 0, CFM sized on heating
+    assert rl.cooling_btuh == 0.0
+    assert abs(rl.cfm - rl.heating_btuh / (1.08 * 50)) < 1e-6
+
+
+def test_per_room_interior_room_gets_infiltration_only():
+    # a room with no exterior surfaces still gets a (small) infiltration load
+    interior = _room("Interior", [], 6000.0)
+    env = geometry.Envelope(surfaces=[], volume_ft3=0.0, rooms=[interior])
+    (rl,) = loads.per_room_loads(env, _sc())
+    assert rl.heating_btuh > 0
+    assert abs(rl.heating_btuh - 1.08 * (0.5 * 6000 / 60.0) * 50) < 1e-6
+
+
+def test_per_room_cfm_takes_larger_of_heat_cool():
+    # a glassy room where cooling airflow can dominate; CFM = max(heat, cool)
+    glassy = _room("Sun", [geometry.Surface("window", 200.0)], 4000.0,
+                   windows={270: 200.0})               # due-West glass, high solar
+    env = geometry.Envelope(surfaces=[], volume_ft3=0.0, rooms=[glassy])
+    (rl,) = loads.per_room_loads(env, _sc_cool())
+    cfm_heat = rl.heating_btuh / (1.08 * 50)
+    cfm_cool = rl.cooling_btuh / (1.08 * loads.COOLING_SUPPLY_DT_F)
+    assert abs(rl.cfm - max(cfm_heat, cfm_cool)) < 1e-6
+
+
+def test_per_room_internal_only_for_conditioned():
+    # internal (occupant/appliance) sensible is shared across conditioned rooms by
+    # area; an unconditioned room gets none
+    cond = _room("Cond", [], 1000.0, conditioned=True)
+    unc = _room("Unc", [], 1000.0, conditioned=False)
+    env = geometry.Envelope(surfaces=[], volume_ft3=0.0, rooms=[cond, unc])
+    cr, ur = loads.per_room_loads(env, _sc_cool())
+    # both have identical geometry; the conditioned room's cooling includes internal gain
+    assert cr.cooling_btuh > ur.cooling_btuh

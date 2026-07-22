@@ -35,12 +35,28 @@ class Cooling:
 
 
 @dataclass(frozen=True)
+class DuctRunSpec:
+    name: str
+    cfm: float
+
+
+@dataclass(frozen=True)
+class Ducts:
+    friction_rate: float                        # in.wc/100ft; fallback when not model-derived
+    runs: tuple[DuctRunSpec, ...] = ()          # hand-listed runs; empty -> derive from the model
+    unit_name: str = "air handler"              # furniture-name substring locating the air handler
+    available_static_pressure: float | None = None  # in.wc; enables friction-rate derivation
+    fitting_factor: float = 1.5                 # straight length -> total effective length multiplier
+
+
+@dataclass(frozen=True)
 class SideCar:
     assemblies: dict[str, float]
     design: DesignConditions
     infiltration_ach: float
     existing_tons: float | None = None   # current equipment nominal tonnage (Manual S check)
     cooling: Cooling | None = None       # optional cooling design conditions (Manual J 1b)
+    ducts: Ducts | None = None           # optional duct runs for Manual D sizing
 
 
 def _require(d: dict, key: str, ctx: str):
@@ -91,6 +107,31 @@ def load_sidecar(path: str) -> SideCar:
             shgc=_require_number(cooling_raw, "shgc", "cooling"),
             occupants=_require_number(cooling_raw, "occupants", "cooling"),
         )
+    ducts_raw = raw.get("ducts")
+    if ducts_raw is not None and not isinstance(ducts_raw, dict):
+        raise ValueError("ducts must be a mapping")
+    ducts = None
+    if ducts_raw is not None:
+        runs = ()
+        runs_raw = ducts_raw.get("runs")   # optional now — absent means "derive from the model"
+        if runs_raw is not None:
+            if not isinstance(runs_raw, list) or not runs_raw:
+                raise ValueError("ducts.runs must be a non-empty list")
+            runs = tuple(
+                DuctRunSpec(name=str(_require(r, "name", "ducts.run")),
+                            cfm=_require_number(r, "cfm", f"ducts.run[{r.get('name', i)}]"))
+                for i, r in enumerate(runs_raw))
+        fr = ducts_raw.get("friction_rate")
+        unit_name = ducts_raw.get("unit_name")
+        ff = ducts_raw.get("fitting_factor")
+        ducts = Ducts(
+            friction_rate=0.08 if fr is None else _require_number(ducts_raw, "friction_rate", "ducts"),
+            runs=runs,
+            unit_name=str(unit_name) if unit_name is not None else "air handler",
+            available_static_pressure=_optional_number(
+                ducts_raw, "available_static_pressure", "ducts"),
+            fitting_factor=1.5 if ff is None else _require_number(ducts_raw, "fitting_factor", "ducts"),
+        )
     sc = SideCar(
         assemblies={k: float(v) for k, v in _require(raw, "assemblies", "root").items()},
         design=DesignConditions(
@@ -101,6 +142,7 @@ def load_sidecar(path: str) -> SideCar:
         infiltration_ach=float(_require(infil, "ach", "infiltration")),
         existing_tons=None if existing_tons is None else float(existing_tons),
         cooling=cooling,
+        ducts=ducts,
     )
     _validate(sc)
     return sc
@@ -146,3 +188,14 @@ def _validate(sc: SideCar) -> None:
             raise ValueError("cooling.shgc must be between 0 and 1")
         if c.occupants < 0:
             raise ValueError("cooling.occupants must be >= 0")
+    if sc.ducts is not None:
+        if not math.isfinite(sc.ducts.friction_rate) or sc.ducts.friction_rate <= 0:
+            raise ValueError("ducts.friction_rate must be finite and > 0")
+        if not math.isfinite(sc.ducts.fitting_factor) or sc.ducts.fitting_factor <= 0:
+            raise ValueError("ducts.fitting_factor must be finite and > 0")
+        asp = sc.ducts.available_static_pressure
+        if asp is not None and (not math.isfinite(asp) or asp <= 0):
+            raise ValueError("ducts.available_static_pressure must be finite and > 0")
+        for run in sc.ducts.runs:
+            if not math.isfinite(run.cfm) or run.cfm <= 0:
+                raise ValueError(f"ducts.run '{run.name}': cfm must be finite and > 0")

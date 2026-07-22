@@ -133,6 +133,77 @@ def test_cooling_block_rejects_boolean(tmp_path):
         sidecar.load_sidecar(_write(tmp_path, _VALID + bad))
 
 
+_DUCTS = "    ducts:\n      friction_rate: 0.1\n      runs:\n        - {name: trunk, cfm: 720}\n        - {name: kids, cfm: 90}\n"
+
+
+def test_ducts_block_optional(tmp_path):
+    sc = sidecar.load_sidecar(_write(tmp_path, _VALID))
+    assert sc.ducts is None
+
+
+def test_ducts_block_parsed(tmp_path):
+    sc = sidecar.load_sidecar(_write(tmp_path, _VALID + _DUCTS))
+    assert sc.ducts is not None
+    assert sc.ducts.friction_rate == 0.1
+    assert [r.name for r in sc.ducts.runs] == ["trunk", "kids"]
+    assert sc.ducts.runs[0].cfm == 720
+
+
+def test_ducts_friction_rate_defaults(tmp_path):
+    body = _VALID + "    ducts:\n      runs:\n        - {name: t, cfm: 100}\n"
+    sc = sidecar.load_sidecar(_write(tmp_path, body))
+    assert sc.ducts.friction_rate == 0.08
+
+
+def test_ducts_rejects_bad_cfm(tmp_path):
+    body = _VALID + "    ducts:\n      runs:\n        - {name: t, cfm: -5}\n"
+    with pytest.raises(ValueError, match="cfm"):
+        sidecar.load_sidecar(_write(tmp_path, body))
+
+
+def test_ducts_rejects_empty_runs(tmp_path):
+    body = _VALID + "    ducts:\n      runs: []\n"
+    with pytest.raises(ValueError, match="runs"):
+        sidecar.load_sidecar(_write(tmp_path, body))
+
+
+def test_ducts_block_without_runs_ok(tmp_path):
+    # runs are optional now (derived from the model); a config-only ducts block loads
+    body = _VALID + "    ducts:\n      friction_rate: 0.09\n      unit_name: furnace\n"
+    sc = sidecar.load_sidecar(_write(tmp_path, body))
+    assert sc.ducts.runs == ()
+    assert sc.ducts.friction_rate == 0.09
+    assert sc.ducts.unit_name == "furnace"
+    assert sc.ducts.available_static_pressure is None
+    assert sc.ducts.fitting_factor == 1.5              # default
+
+
+def test_ducts_defaults_when_bare(tmp_path):
+    sc = sidecar.load_sidecar(_write(tmp_path, _VALID + "    ducts: {}\n"))
+    assert sc.ducts.friction_rate == 0.08
+    assert sc.ducts.unit_name == "air handler"
+
+
+def test_ducts_parses_asp_and_fitting_factor(tmp_path):
+    body = _VALID + ("    ducts:\n      available_static_pressure: 0.5\n"
+                     "      fitting_factor: 2.0\n")
+    sc = sidecar.load_sidecar(_write(tmp_path, body))
+    assert sc.ducts.available_static_pressure == 0.5
+    assert sc.ducts.fitting_factor == 2.0
+
+
+def test_ducts_rejects_bad_asp(tmp_path):
+    body = _VALID + "    ducts:\n      available_static_pressure: 0\n"
+    with pytest.raises(ValueError, match="available_static_pressure"):
+        sidecar.load_sidecar(_write(tmp_path, body))
+
+
+def test_ducts_rejects_bad_fitting_factor(tmp_path):
+    body = _VALID + "    ducts:\n      fitting_factor: -1\n"
+    with pytest.raises(ValueError, match="fitting_factor"):
+        sidecar.load_sidecar(_write(tmp_path, body))
+
+
 def test_load_sidecar_rejects_bad_values(tmp_path):
     base = """
         design:

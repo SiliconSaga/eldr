@@ -146,3 +146,101 @@ def test_zip_without_home_xml_errors(tmp_path):
         zf.writestr("other.txt", "nope")
     with pytest.raises(ValueError, match=r"Home\.xml"):
         geometry.extract_envelope(str(z))
+
+
+# Two conditioned rooms (West/East) sharing a north facade on the top level "Main",
+# plus one unconditioned "Gar" room on the lower "Garage" level, a west-wall window,
+# and a placed air handler. Exercises room parsing, wall-area splitting, per-room
+# ceiling/floor, the conditioned flag, furniture, and level elevations.
+ROOM_FIXTURE = textwrap.dedent("""\
+<?xml version='1.0'?>
+<home version='7400' name='t' wallHeight='300'>
+  <level id='L1' name='Main' elevation='100.0' floorThickness='12.0' height='300' elevationIndex='1'/>
+  <level id='LG' name='Garage' elevation='0.0' floorThickness='12.0' height='300' elevationIndex='0'/>
+  <wall id='w-n' level='L1' xStart='0' yStart='0' xEnd='1000' yEnd='0' height='300' thickness='10'/>
+  <wall id='w-s' level='L1' xStart='0' yStart='500' xEnd='1000' yEnd='500' height='300' thickness='10'/>
+  <wall id='w-w' level='L1' xStart='0' yStart='0' xEnd='0' yEnd='500' height='300' thickness='10'/>
+  <wall id='w-e' level='L1' xStart='1000' yStart='0' xEnd='1000' yEnd='500' height='300' thickness='10'/>
+  <wall id='w-int' level='L1' xStart='500' yStart='0' xEnd='500' yEnd='500' height='300' thickness='10'/>
+  <wall id='g-n' level='LG' xStart='0' yStart='0' xEnd='600' yEnd='0' height='300' thickness='10'/>
+  <wall id='g-s' level='LG' xStart='0' yStart='600' xEnd='600' yEnd='600' height='300' thickness='10'/>
+  <wall id='g-w' level='LG' xStart='0' yStart='0' xEnd='0' yEnd='600' height='300' thickness='10'/>
+  <wall id='g-e' level='LG' xStart='600' yStart='0' xEnd='600' yEnd='600' height='300' thickness='10'/>
+  <doorOrWindow id='win1' level='L1' catalogId='eTeks#window' name='Window' x='0' y='250' angle='1.5707964' width='100' height='100'/>
+  <room id='r-west' level='L1' name='West'>
+    <point x='0' y='0'/><point x='500' y='0'/><point x='500' y='500'/><point x='0' y='500'/>
+  </room>
+  <room id='r-east' level='L1' name='East'>
+    <point x='500' y='0'/><point x='1000' y='0'/><point x='1000' y='500'/><point x='500' y='500'/>
+  </room>
+  <room id='r-gar' level='LG' name='Gar'>
+    <point x='0' y='0'/><point x='600' y='0'/><point x='600' y='600'/><point x='0' y='600'/>
+  </room>
+  <pieceOfFurniture id='ah1' level='L1' name='Air Handler' x='250' y='250' width='60' depth='60' height='90'/>
+</home>
+""")
+
+
+def _room(env, name):
+    return next(r for r in env.rooms if r.name == name)
+
+
+def _rcat(room):
+    out = {}
+    for s in room.surfaces:
+        out[s.category] = out.get(s.category, 0.0) + s.area_ft2
+    return out
+
+
+def test_rooms_parsed_with_conditioned_flag(tmp_path):
+    p = tmp_path / "Home.xml"
+    p.write_text(ROOM_FIXTURE)
+    env = geometry.extract_envelope(str(p))
+    from eldr import units
+    assert {r.name for r in env.rooms} == {"West", "East", "Gar"}
+    # West/East on Main are conditioned; Gar on the garage level is not.
+    assert _room(env, "West").conditioned and _room(env, "East").conditioned
+    assert not _room(env, "Gar").conditioned
+    # each Main room is a 500x500 cm square
+    assert abs(_room(env, "West").area_ft2 - units.sqcm_to_sqft(500 * 500)) < 1e-6
+
+
+def test_room_wall_area_split_and_window(tmp_path):
+    p = tmp_path / "Home.xml"
+    p.write_text(ROOM_FIXTURE)
+    env = geometry.extract_envelope(str(p))
+    from eldr import units
+    west, east = _rcat(_room(env, "West")), _rcat(_room(env, "East"))
+    # the north facade (spanning both) is split, so both rooms get exterior wall
+    assert west["exterior_wall"] > 0 and east["exterior_wall"] > 0
+    # only the West room holds the window (attributed by position)
+    assert abs(west["window"] - units.sqcm_to_sqft(100 * 100)) < 1e-6
+    assert "window" not in east
+    # every room's walls sum to ~ the whole-house exterior wall (net of the window);
+    # the split conserves area (Gar's garage-box walls are attributed to Gar).
+    whole = sum(s.area_ft2 for s in env.surfaces if s.category == "exterior_wall")
+    per_room = sum(v for r in env.rooms for k, v in _rcat(r).items() if k == "exterior_wall")
+    assert abs(per_room - whole) < 1e-6
+
+
+def test_room_ceiling_floor_and_metadata(tmp_path):
+    p = tmp_path / "Home.xml"
+    p.write_text(ROOM_FIXTURE)
+    env = geometry.extract_envelope(str(p))
+    # Main is the top level -> its rooms get a ceiling, not a floor
+    west = _rcat(_room(env, "West"))
+    assert "ceiling" in west and "floor" not in west
+    # Garage is the bottom level -> its room gets a floor, not a ceiling
+    gar = _rcat(_room(env, "Gar"))
+    assert "floor" in gar and "ceiling" not in gar
+    # furniture + level elevations exposed
+    assert any(f.name == "Air Handler" for f in env.furniture)
+    assert env.level_elevations["L1"] == 100.0 and env.level_elevations["LG"] == 0.0
+
+
+def test_no_rooms_leaves_rooms_empty(tmp_path):
+    # the original single-box fixture has no <room> -> rooms is empty (backward compatible)
+    p = tmp_path / "Home.xml"
+    p.write_text(FIXTURE)
+    env = geometry.extract_envelope(str(p))
+    assert env.rooms == []
