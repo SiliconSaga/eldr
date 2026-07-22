@@ -13,6 +13,9 @@ class DesignConditions:
 
     @property
     def heating_delta_t(self) -> float:
+        if self.outdoor_heating_99_f is None:
+            raise ValueError("outdoor_heating_99_f is unresolved — set it in the side-car "
+                             "or provide the model's lat/long for a climate lookup")
         return self.indoor_heating_f - self.outdoor_heating_99_f
 
 
@@ -25,6 +28,9 @@ class Cooling:
 
     @property
     def cooling_delta_t(self) -> float:
+        if self.outdoor_1_f is None:
+            raise ValueError("cooling.outdoor_1_f is unresolved — set it in the side-car "
+                             "or provide the model's lat/long for a climate lookup")
         return self.outdoor_1_f - self.indoor_f
 
 

@@ -90,7 +90,8 @@ def cooling_load(env: geometry.Envelope, sc: sidecar.SideCar) -> CoolingResult:
     solar = 0.0
     for bearing, area_ft2 in env.windows_by_bearing.items():
         q = area_ft2 * c.shgc * solar_hgf(bearing)
-        by_category[f"solar-{octant(bearing)}"] = by_category.get(f"solar-{octant(bearing)}", 0.0) + q
+        key = f"solar-{octant(bearing)}"
+        by_category[key] = by_category.get(key, 0.0) + q
         solar += q
 
     internal_sensible = c.occupants * INTERNAL_SENSIBLE_PER_OCCUPANT + APPLIANCE_SENSIBLE_BTUH

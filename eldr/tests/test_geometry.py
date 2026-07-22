@@ -94,6 +94,18 @@ def test_compass_latlong_to_degrees(tmp_path):
     assert env.longitude is not None and abs(env.longitude - -74.0) < 0.1
 
 
+def test_out_of_range_latitude_rejected(tmp_path):
+    # latitude in radians that converts to > 90 deg is invalid model data
+    p = tmp_path / "Home.xml"
+    p.write_text(FIXTURE.replace(
+        "<home version='7400' name='t' wallHeight='300'>",
+        "<home version='7400' name='t' wallHeight='300'>\n"
+        "  <compass x='0' y='0' diameter='100' latitude='3.0' longitude='0'/>",  # 3 rad ~ 172 deg
+    ))
+    with pytest.raises(ValueError, match="latitude"):
+        geometry.extract_envelope(str(p))
+
+
 def test_extract_envelope_from_sh3d(tmp_path):
     # A .sh3d is a ZIP whose Home.xml is authoritative — eldr reads it directly.
     sh3d = tmp_path / "House.sh3d"

@@ -29,8 +29,10 @@ assemblies:
 
 
 def test_end_to_end(tmp_path):
-    home = tmp_path / "Home.xml"; home.write_text(FIXTURE)
-    sc = tmp_path / "sc.yaml"; sc.write_text(SIDECAR)
+    home = tmp_path / "Home.xml"
+    home.write_text(FIXTURE)
+    sc = tmp_path / "sc.yaml"
+    sc.write_text(SIDECAR)
     md = cli.run(str(home), str(sc))
     assert "# Eldr — Heating Load" in md
     assert "total" in md
@@ -59,16 +61,20 @@ assemblies:
 
 
 def test_climate_lookup_fills_design_temp(tmp_path):
-    home = tmp_path / "Home.xml"; home.write_text(FIXTURE_GEO)
-    sc = tmp_path / "sc.yaml"; sc.write_text(SIDECAR_NO_TEMP)
+    home = tmp_path / "Home.xml"
+    home.write_text(FIXTURE_GEO)
+    sc = tmp_path / "sc.yaml"
+    sc.write_text(SIDECAR_NO_TEMP)
     md = cli.run(str(home), str(sc))
     assert "nearest station" in md          # the lookup note rendered
     assert ("NY" in md) or ("NJ" in md)     # West Orange -> NYC/Newark
 
 
 def test_missing_temp_and_no_latlong_errors(tmp_path):
-    home = tmp_path / "Home.xml"; home.write_text(FIXTURE)   # no compass
-    sc = tmp_path / "sc.yaml"; sc.write_text(SIDECAR_NO_TEMP)
+    home = tmp_path / "Home.xml"
+    home.write_text(FIXTURE)                # no compass
+    sc = tmp_path / "sc.yaml"
+    sc.write_text(SIDECAR_NO_TEMP)
     import pytest
     with pytest.raises(ValueError, match="lat/long"):
         cli.run(str(home), str(sc))

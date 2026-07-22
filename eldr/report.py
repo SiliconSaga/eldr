@@ -9,6 +9,9 @@ def render_heating(result: loads.HeatingResult, sc: sidecar.SideCar,
                    station: climate_mod.Station | None = None) -> str:
     """Render the heating load (and optional cooling + Manual S sizing) as Markdown."""
     d = sc.design
+    if d.outdoor_heating_99_f is None:
+        raise ValueError("report requires a resolved design.outdoor_heating_99_f "
+                         "(run climate resolution or set it in the side-car)")
     lines = [
         "# Eldr — Heating Load (Phase 1, whole-house)",
         "",
@@ -47,6 +50,8 @@ def _cooling_section(c: loads.CoolingResult, sc: sidecar.SideCar) -> list[str]:
     cd = sc.cooling
     if cd is None:
         raise ValueError("cooling report requires cooling conditions in the side-car")
+    if cd.outdoor_1_f is None:
+        raise ValueError("cooling report requires a resolved cooling.outdoor_1_f")
     lines = [
         "",
         "## Eldr — Cooling Load (Manual J 1b, whole-house)",

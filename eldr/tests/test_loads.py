@@ -74,8 +74,10 @@ def test_cooling_load_requires_cooling_block():
 
 def test_solar_hgf_interpolates():
     # cardinals hit the anchors exactly
-    assert loads.solar_hgf(0) == 20 and loads.solar_hgf(90) == 75
-    assert loads.solar_hgf(180) == 45 and loads.solar_hgf(270) == 75
+    assert loads.solar_hgf(0) == 20
+    assert loads.solar_hgf(90) == 75
+    assert loads.solar_hgf(180) == 45
+    assert loads.solar_hgf(270) == 75
     # SE (135) is halfway between E(75) and S(45) -> 60
     assert abs(loads.solar_hgf(135) - 60.0) < 1e-9
     # SW (225) is halfway between S(45) and W(75) -> 60; and it wraps at 360
@@ -84,8 +86,10 @@ def test_solar_hgf_interpolates():
 
 
 def test_octant_labels():
-    assert loads.octant(0) == "N" and loads.octant(90) == "E"
-    assert loads.octant(135) == "SE" and loads.octant(222) == "SW"
+    assert loads.octant(0) == "N"
+    assert loads.octant(90) == "E"
+    assert loads.octant(135) == "SE"
+    assert loads.octant(222) == "SW"
     assert loads.octant(359) == "N"      # wraps back to N
 
 

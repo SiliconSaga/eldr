@@ -134,6 +134,10 @@ def extract_envelope(home_path: str) -> Envelope:
         lat_rad, lon_rad = compass.get("latitude"), compass.get("longitude")
         latitude = math.degrees(float(lat_rad)) if lat_rad is not None else None
         longitude = math.degrees(float(lon_rad)) if lon_rad is not None else None
+        if latitude is not None and (not math.isfinite(latitude) or not -90 <= latitude <= 90):
+            raise ValueError("compass latitude must be finite and between -90 and 90")
+        if longitude is not None and (not math.isfinite(longitude) or not -180 <= longitude <= 180):
+            raise ValueError("compass longitude must be finite and between -180 and 180")
 
     levels = {lv.get("id"): lv for lv in root.findall("level")}
     walls_by_level: dict[str, list] = {}
