@@ -124,9 +124,16 @@ def _dist_point_to_polygon_cm(px, py, points):
     return best
 
 
-# How many points to sample along a wall when splitting its area among the rooms it
-# runs behind (higher = finer split of a facade shared by several rooms).
-_WALL_SAMPLES = 7
+# Spacing (cm) between sample points when splitting a wall's area among the rooms it
+# runs behind. Density-based rather than a fixed count, so a narrow room along a long
+# facade still gets sampled (bounded miss). Clamped to at least _WALL_MIN_SAMPLES.
+_WALL_SAMPLE_SPACING_CM = 25.0
+_WALL_MIN_SAMPLES = 7
+
+
+def _wall_samples(w):
+    """Number of split-samples for a wall — one per ~25 cm, at least a floor count."""
+    return max(_WALL_MIN_SAMPLES, math.ceil(_wall_length_cm(w) / _WALL_SAMPLE_SPACING_CM))
 
 
 def _sample_segment(w, k):
@@ -135,6 +142,50 @@ def _sample_segment(w, k):
     bx, by = _f(w, "xEnd"), _f(w, "yEnd")
     return [(ax + (bx - ax) * (i + 0.5) / k, ay + (by - ay) * (i + 0.5) / k)
             for i in range(k)]
+
+
+def _point_in_polygon(px, py, points):
+    """Ray-cast test: is point (px, py) inside polygon [(x, y), ...]?"""
+    inside = False
+    n = len(points)
+    j = n - 1
+    for i in range(n):
+        xi, yi = points[i]
+        xj, yj = points[j]
+        if (yi > py) != (yj > py):
+            x_cross = xi + (xj - xi) * (py - yi) / (yj - yi)
+            if px < x_cross:
+                inside = not inside
+        j = i
+    return inside
+
+
+# How far (cm) past a wall face to probe for a room on that side, when classifying a
+# wall as envelope vs partition — clears the wall's half-thickness plus a margin.
+_SIDE_PROBE_MARGIN_CM = 15.0
+
+
+def _wall_borders_room_on_sides(w, rooms):
+    """(left_in, right_in): does a conditioned room sit on each side of wall `w`?
+
+    Probes a point just past each wall face (offset along the wall normal) and tests
+    it against every room polygon. A wall with a room on exactly one side is on the
+    building envelope; a room on both sides is an interior partition.
+    """
+    ax, ay = _f(w, "xStart"), _f(w, "yStart")
+    bx, by = _f(w, "xEnd"), _f(w, "yEnd")
+    dx, dy = bx - ax, by - ay
+    length = (dx * dx + dy * dy) ** 0.5
+    if length == 0.0:
+        return False, False
+    nx, ny = -dy / length, dx / length            # unit normal
+    mx, my = (ax + bx) / 2.0, (ay + by) / 2.0
+    off = _f(w, "thickness") / 2.0 + _SIDE_PROBE_MARGIN_CM
+    p_left = (mx + nx * off, my + ny * off)
+    p_right = (mx - nx * off, my - ny * off)
+    left_in = any(_point_in_polygon(p_left[0], p_left[1], r["points"]) for r in rooms)
+    right_in = any(_point_in_polygon(p_right[0], p_right[1], r["points"]) for r in rooms)
+    return left_in, right_in
 
 
 def _wall_midpoint(w):
@@ -216,6 +267,8 @@ def _parse_rooms(root, levels):
             continue
         lid = r.get("level")
         area_cm2, centroid = _polygon_area_centroid(pts)
+        if area_cm2 <= 0.0:                    # collinear / repeated points -> degenerate
+            continue
         lv = levels.get(lid)
         by_level.setdefault(lid, []).append({
             "id": r.get("id"),
@@ -275,10 +328,20 @@ def extract_envelope(home_path: str) -> Envelope:
         level_extent[level_id] = (minx, maxx, miny, maxy)
         lv = levels[level_id]
         is_basement = (lv.get("name") or "").lower().startswith("basement")
+        rooms_here = rooms_by_level.get(level_id, [])
         for w in walls:
-            mx, my = _wall_midpoint(w)
-            exterior = (abs(mx - minx) < 1.0 or abs(mx - maxx) < 1.0
-                        or abs(my - miny) < 1.0 or abs(my - maxy) < 1.0)
+            # A wall is on the thermal envelope if it borders a room on exactly one
+            # side (room inside, outdoors out). This follows the actual room-polygon
+            # outline, so perimeter walls on an extension/wing are caught even when
+            # they sit inside the level's bounding rectangle. Levels with no rooms
+            # fall back to the bounding-box edge test.
+            if rooms_here:
+                left_in, right_in = _wall_borders_room_on_sides(w, rooms_here)
+                exterior = left_in != right_in
+            else:
+                mx, my = _wall_midpoint(w)
+                exterior = (abs(mx - minx) < 1.0 or abs(mx - maxx) < 1.0
+                            or abs(my - miny) < 1.0 or abs(my - maxy) < 1.0)
             if not exterior:
                 continue
             cat = "basement_wall" if is_basement else "exterior_wall"
@@ -288,10 +351,10 @@ def extract_envelope(home_path: str) -> Envelope:
             # Split the wall's gross area among the rooms it runs behind: sample points
             # along it, assign each to the nearest room, tally its share. A facade shared
             # by several rooms is divided; a corner-to-corner wall lands wholly in one.
-            rooms_here = rooms_by_level.get(level_id, [])
             if rooms_here:
-                share = units.sqcm_to_sqft(area) / _WALL_SAMPLES
-                for sx, sy in _sample_segment(w, _WALL_SAMPLES):
+                k = _wall_samples(w)
+                share = units.sqcm_to_sqft(area) / k
+                for sx, sy in _sample_segment(w, k):
                     rid = min(rooms_here,
                               key=lambda r: _dist_point_to_polygon_cm(sx, sy, r["points"]))["id"]
                     g = room_gross_wall[rid]

@@ -1,9 +1,10 @@
 """Manual D (demo-grade): size round supply ducts by the equal-friction method.
 
 Given each run's airflow (CFM) and a design friction rate, size a round duct and
-report its velocity. Round-only; no pressure-drop / total-effective-length yet.
-A full Manual D derives the friction rate from available static pressure ÷ the
-worst run's effective length — here it's a side-car input. Constants are demo-grade.
+report its velocity. Round-only. When a run's total effective length is supplied,
+it also reports the friction pressure drop over that length. A full Manual D
+derives the friction rate from available static pressure ÷ the worst run's
+effective length (see ductmodel); here the rate is an input. Constants are demo-grade.
 """
 from __future__ import annotations
 from dataclasses import dataclass

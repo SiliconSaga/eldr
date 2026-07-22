@@ -86,10 +86,11 @@ def _duct_section(dr: ductd_mod.DuctResult,
     has_len = any(r.length_ft is not None for r in dr.runs)
     if plan is not None and plan.derived:
         fr_note = (f"**{dr.friction_rate:.3g} in.wc / 100 ft** "
-                   f"(derived: {plan.available_static_pressure:.2g} in.wc ÷ "
+                   f"(derived: {plan.available_static_pressure:.2g} in.wc × 100 ÷ "
                    f"{plan.worst_length_ft:,.0f} ft worst run)")
     else:
-        fr_note = f"**{dr.friction_rate:.3g} in.wc / 100 ft** (side-car default)"
+        fr_note = (f"**{dr.friction_rate:.3g} in.wc / 100 ft** "
+                   f"(design rate — not derived from static pressure)")
     lines = [
         "",
         "## Manual D — Duct Sizing (round, equal-friction)",

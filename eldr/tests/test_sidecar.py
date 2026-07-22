@@ -204,6 +204,35 @@ def test_ducts_rejects_bad_fitting_factor(tmp_path):
         sidecar.load_sidecar(_write(tmp_path, body))
 
 
+def test_ducts_runs_non_mapping_item_rejected(tmp_path):
+    # a scalar list item must raise a clean ValueError, not a TypeError/AttributeError
+    body = _VALID + "    ducts:\n      runs:\n        - 42\n"
+    with pytest.raises(ValueError, match="mapping"):
+        sidecar.load_sidecar(_write(tmp_path, body))
+
+
+def test_ground_temp_defaults(tmp_path):
+    sc = sidecar.load_sidecar(_write(tmp_path, _VALID))
+    assert sc.design.ground_temp_f == sidecar.DEFAULT_GROUND_TEMP_F
+
+
+def test_ground_temp_parsed(tmp_path):
+    body = """
+        design:
+          indoor_heating_f: 70
+          outdoor_heating_99_f: 15
+          supply_air_rise_f: 50
+          ground_temp_f: 55
+        infiltration:
+          ach: 0.5
+        assemblies:
+          exterior_wall: 0.09
+    """
+    sc = sidecar.load_sidecar(_write(tmp_path, body))
+    assert sc.design.ground_temp_f == 55
+    assert sc.design.ground_heating_delta_t == 70 - 55       # indoor 70 - ground 55
+
+
 def test_load_sidecar_rejects_bad_values(tmp_path):
     base = """
         design:

@@ -55,18 +55,17 @@ def plan_ducts(env: geometry.Envelope, sc: sidecar.SideCar) -> DuctPlan:
     fitting = d.fitting_factor if d is not None else 1.5
 
     unit = find_unit(env, unit_name)
-    room_of = {id(rl): room for room, rl in zip(env.rooms, room_loads)}
     unit_elev = env.level_elevations.get(unit.level_id, 0.0) if unit is not None else None
 
     runs: list[tuple[str, float]] = []
     lengths: list[float | None] = []
     seen: dict[str, int] = {}
-    for rl in room_loads:
+    # per_room_loads returns one RoomLoad per env.rooms room, in order — pair them.
+    for room, rl in zip(env.rooms, room_loads, strict=True):
         if not rl.conditioned or rl.cfm < MIN_RUN_CFM:
             continue
         length = None
         if unit is not None:
-            room = room_of[id(rl)]
             cx, cy = room.centroid_cm
             horiz = abs(cx - unit.x_cm) + abs(cy - unit.y_cm)   # Manhattan, plan cm
             vert = abs(env.level_elevations.get(room.level_id, 0.0) - unit_elev)

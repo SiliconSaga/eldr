@@ -244,3 +244,69 @@ def test_no_rooms_leaves_rooms_empty(tmp_path):
     p.write_text(FIXTURE)
     env = geometry.extract_envelope(str(p))
     assert env.rooms == []
+
+
+# An L/T footprint: West room (top-left, y 0..500) and East room (right, y 0..1000).
+# The East room extends further south, so the level's bounding box reaches y=1000 —
+# yet West's south wall at y=500 is a real perimeter wall (nothing conditioned south
+# of it). The bounding-box test would miss it; the polygon-outline test must catch it.
+LSHAPE_FIXTURE = textwrap.dedent("""\
+<?xml version='1.0'?>
+<home version='7400' name='t' wallHeight='300'>
+  <level id='L1' name='Main' elevation='0.0' floorThickness='12.0' height='300' elevationIndex='0'/>
+  <wall id='wn-w' level='L1' xStart='0' yStart='0' xEnd='500' yEnd='0' height='300' thickness='10'/>
+  <wall id='wn-e' level='L1' xStart='500' yStart='0' xEnd='1000' yEnd='0' height='300' thickness='10'/>
+  <wall id='w-w' level='L1' xStart='0' yStart='0' xEnd='0' yEnd='500' height='300' thickness='10'/>
+  <wall id='ws-w' level='L1' xStart='0' yStart='500' xEnd='500' yEnd='500' height='300' thickness='10'/>
+  <wall id='w-mid' level='L1' xStart='500' yStart='0' xEnd='500' yEnd='500' height='300' thickness='10'/>
+  <wall id='w-e-lo' level='L1' xStart='500' yStart='500' xEnd='500' yEnd='1000' height='300' thickness='10'/>
+  <wall id='w-e' level='L1' xStart='1000' yStart='0' xEnd='1000' yEnd='1000' height='300' thickness='10'/>
+  <wall id='ws-e' level='L1' xStart='500' yStart='1000' xEnd='1000' yEnd='1000' height='300' thickness='10'/>
+  <room id='r-w' level='L1' name='West'><point x='0' y='0'/><point x='500' y='0'/><point x='500' y='500'/><point x='0' y='500'/></room>
+  <room id='r-e' level='L1' name='East'><point x='500' y='0'/><point x='1000' y='0'/><point x='1000' y='1000'/><point x='500' y='1000'/></room>
+</home>
+""")
+
+
+def test_polygon_outline_catches_setback_perimeter_wall(tmp_path):
+    p = tmp_path / "Home.xml"
+    p.write_text(LSHAPE_FIXTURE)
+    env = geometry.extract_envelope(str(p))
+    from eldr import units
+    west = _rcat(_room(env, "West"))
+    # West's three real perimeter sides (north + west + the SET-BACK south wall) are
+    # all exterior — more than the two the bounding-box edge test would have found.
+    assert abs(west["exterior_wall"] - units.sqcm_to_sqft(3 * 500 * 300)) < 1e-6
+    # the shared West/East partition (w-mid) is interior -> excluded from the envelope.
+    # Whole-house exterior wall == the true perimeter length (4000 cm) × height.
+    whole = sum(s.area_ft2 for s in env.surfaces if s.category == "exterior_wall")
+    assert abs(whole - units.sqcm_to_sqft(4000 * 300)) < 1e-6
+
+
+# A 100 cm room at the end of a 2000 cm exterior wall — a fixed 7-sample split would
+# miss it entirely (first sample lands at x≈143). Density-based sampling must give it
+# a share of that facade.
+NARROW_FIXTURE = textwrap.dedent("""\
+<?xml version='1.0'?>
+<home version='7400' name='t' wallHeight='300'>
+  <level id='L1' name='Main' elevation='0.0' floorThickness='12.0' height='300' elevationIndex='0'/>
+  <wall id='w-n' level='L1' xStart='0' yStart='0' xEnd='2000' yEnd='0' height='300' thickness='10'/>
+  <wall id='w-s' level='L1' xStart='0' yStart='500' xEnd='2000' yEnd='500' height='300' thickness='10'/>
+  <wall id='w-w' level='L1' xStart='0' yStart='0' xEnd='0' yEnd='500' height='300' thickness='10'/>
+  <wall id='w-e' level='L1' xStart='2000' yStart='0' xEnd='2000' yEnd='500' height='300' thickness='10'/>
+  <wall id='w-mid' level='L1' xStart='100' yStart='0' xEnd='100' yEnd='500' height='300' thickness='10'/>
+  <room id='r-narrow' level='L1' name='Narrow'><point x='0' y='0'/><point x='100' y='0'/><point x='100' y='500'/><point x='0' y='500'/></room>
+  <room id='r-wide' level='L1' name='Wide'><point x='100' y='0'/><point x='2000' y='0'/><point x='2000' y='500'/><point x='100' y='500'/></room>
+</home>
+""")
+
+
+def test_adaptive_sampling_gives_narrow_room_its_facade_share(tmp_path):
+    p = tmp_path / "Home.xml"
+    p.write_text(NARROW_FIXTURE)
+    env = geometry.extract_envelope(str(p))
+    from eldr import units
+    narrow = _rcat(_room(env, "Narrow"))
+    # its own west wall is 500×300; density sampling must add a slice of the north
+    # facade on top, so its exterior wall exceeds the west-wall-only area.
+    assert narrow["exterior_wall"] > units.sqcm_to_sqft(500 * 300)

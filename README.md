@@ -49,7 +49,8 @@ All values are validated (finite, physical) — a zero supply-air rise, negative
 
 ## How geometry maps to loads
 
-- **Exterior vs interior walls** — classified geometrically (perimeter walls of each level). Basement-level exterior walls are their own category.
+- **Exterior vs interior walls** — a wall is on the envelope if it borders a room on exactly one side (the room-polygon outline), so perimeter walls on an extension/wing are caught even off the level's bounding rectangle. Levels with no rooms fall back to a bounding-box test. Basement-level exterior walls are their own category. Caveat: interior space not yet drawn as a room reads as "outdoors," so those walls can over-count until the space is drawn.
+- **Below-grade surfaces are ground-coupled** — `basement_wall` and `floor` use a ground ΔT (indoor − `design.ground_temp_f`, default 50°F) instead of the outdoor-air ΔT, because they lose heat to ~50°F soil, not design-cold air. In summer the soil is a heat sink, so they add no cooling load. This is why a partial basement stops dominating the load.
 - **Windows/doors** — an opening counts toward the envelope only when it sits unambiguously on one exterior wall (distance + overlap + orientation); interior openings are ignored.
 - **Window orientation** — each window's compass facing comes from the model's compass `northDirection` + its wall angle. **Set `northDirection` from your survey** for true facing; until then the orientation split is provisional (the report says so).
 - **Per-room loads (Manual J 1c)** — when the model has `<room>` polygons, each room gets its own load: exterior walls are split among the rooms they run behind (sampled along each wall), windows/doors are attributed by position, and top/bottom rooms get ceiling/floor. Rooms on garage/crawlspace levels are treated as unconditioned. Design CFM per room is the larger of its heating and cooling airflow.

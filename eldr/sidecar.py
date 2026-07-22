@@ -3,6 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 import yaml
+from eldr import ductd
+
+# Deep soil temperature (°F) a below-grade surface is coupled to when the side-car
+# doesn't specify one. Roughly the annual-mean air temp for a temperate US climate.
+DEFAULT_GROUND_TEMP_F = 50.0
 
 
 @dataclass(frozen=True)
@@ -10,6 +15,7 @@ class DesignConditions:
     indoor_heating_f: float
     outdoor_heating_99_f: float | None   # None -> resolved from lat/long (see climate)
     supply_air_rise_f: float
+    ground_temp_f: float = DEFAULT_GROUND_TEMP_F   # deep-soil temp for below-grade surfaces
 
     @property
     def heating_delta_t(self) -> float:
@@ -17,6 +23,15 @@ class DesignConditions:
             raise ValueError("outdoor_heating_99_f is unresolved — set it in the side-car "
                              "or provide the model's lat/long for a climate lookup")
         return self.indoor_heating_f - self.outdoor_heating_99_f
+
+    @property
+    def ground_heating_delta_t(self) -> float:
+        """Heating ΔT for below-grade surfaces — coupled to soil, not outdoor air.
+
+        Clamped at 0: if the soil is warmer than the indoor setpoint the surface
+        gains heat rather than losing it, which a heating load shouldn't count.
+        """
+        return max(0.0, self.indoor_heating_f - self.ground_temp_f)
 
 
 @dataclass(frozen=True)
@@ -117,15 +132,20 @@ def load_sidecar(path: str) -> SideCar:
         if runs_raw is not None:
             if not isinstance(runs_raw, list) or not runs_raw:
                 raise ValueError("ducts.runs must be a non-empty list")
-            runs = tuple(
-                DuctRunSpec(name=str(_require(r, "name", "ducts.run")),
-                            cfm=_require_number(r, "cfm", f"ducts.run[{r.get('name', i)}]"))
-                for i, r in enumerate(runs_raw))
+            runs_list = []
+            for i, r in enumerate(runs_raw):
+                if not isinstance(r, dict):
+                    raise ValueError(f"ducts.runs[{i}] must be a mapping with name + cfm")
+                runs_list.append(
+                    DuctRunSpec(name=str(_require(r, "name", "ducts.run")),
+                                cfm=_require_number(r, "cfm", f"ducts.run[{r.get('name', i)}]")))
+            runs = tuple(runs_list)
         fr = ducts_raw.get("friction_rate")
         unit_name = ducts_raw.get("unit_name")
         ff = ducts_raw.get("fitting_factor")
         ducts = Ducts(
-            friction_rate=0.08 if fr is None else _require_number(ducts_raw, "friction_rate", "ducts"),
+            friction_rate=(ductd.DEFAULT_FRICTION_RATE if fr is None
+                           else _require_number(ducts_raw, "friction_rate", "ducts")),
             runs=runs,
             unit_name=str(unit_name) if unit_name is not None else "air handler",
             available_static_pressure=_optional_number(
@@ -138,6 +158,8 @@ def load_sidecar(path: str) -> SideCar:
             indoor_heating_f=float(_require(design, "indoor_heating_f", "design")),
             outdoor_heating_99_f=_optional_number(design, "outdoor_heating_99_f", "design"),
             supply_air_rise_f=float(_require(design, "supply_air_rise_f", "design")),
+            ground_temp_f=(DEFAULT_GROUND_TEMP_F if design.get("ground_temp_f") is None
+                           else _require_number(design, "ground_temp_f", "design")),
         ),
         infiltration_ach=float(_require(infil, "ach", "infiltration")),
         existing_tons=None if existing_tons is None else float(existing_tons),
@@ -152,6 +174,7 @@ def _validate(sc: SideCar) -> None:
     numeric = {
         "design.indoor_heating_f": sc.design.indoor_heating_f,
         "design.supply_air_rise_f": sc.design.supply_air_rise_f,
+        "design.ground_temp_f": sc.design.ground_temp_f,
         "infiltration.ach": sc.infiltration_ach,
     }
     if sc.design.outdoor_heating_99_f is not None:   # optional — may be looked up

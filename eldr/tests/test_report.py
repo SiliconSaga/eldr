@@ -120,7 +120,7 @@ def test_render_manual_d_without_unit_notes_absence():
     md = report.render_heating(_result(), _sc(), ducts=dr, duct_plan=_plan())
     assert "## Manual D" in md
     assert "No unit found" in md
-    assert "side-car default" in md
+    assert "not derived" in md
     assert "Length" not in md            # no length column without a unit
 
 

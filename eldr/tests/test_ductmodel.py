@@ -67,7 +67,7 @@ def test_plan_with_unit_computes_lengths():
     assert plan.unit is unit
     # branch length = (|100-0| horiz + |200-0| vert) cm -> ft, x fitting 2.0
     from eldr import units
-    (far_len,) = [l for (name, _), l in zip(plan.runs, plan.lengths)
+    (far_len,) = [length for (name, _), length in zip(plan.runs, plan.lengths)
                   if name == "Far"]
     assert abs(far_len - units.cm_to_ft(300.0) * 2.0) < 1e-6
 

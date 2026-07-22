@@ -143,6 +143,43 @@ def test_per_room_cfm_takes_larger_of_heat_cool():
     assert abs(rl.cfm - max(cfm_heat, cfm_cool)) < 1e-6
 
 
+def _sc_ground():
+    return sidecar.SideCar(
+        assemblies={"exterior_wall": 0.1, "basement_wall": 0.2, "floor": 0.05},
+        design=sidecar.DesignConditions(70, 15, 50, ground_temp_f=50),   # air ΔT 55, ground ΔT 20
+        infiltration_ach=0.0,
+        cooling=sidecar.Cooling(indoor_f=75, outdoor_1_f=95, shgc=0.4, occupants=0),
+    )
+
+
+def test_below_grade_uses_ground_delta_t():
+    # basement_wall + floor are ground-coupled (ΔT 20); exterior_wall sees air ΔT 55
+    env = geometry.Envelope(surfaces=[geometry.Surface("exterior_wall", 100.0),
+                                      geometry.Surface("basement_wall", 100.0),
+                                      geometry.Surface("floor", 100.0)], volume_ft3=0.0)
+    r = loads.heating_load(env, _sc_ground())
+    assert abs(r.by_category["exterior_wall"] - 0.1 * 100 * 55) < 1e-6
+    assert abs(r.by_category["basement_wall"] - 0.2 * 100 * 20) < 1e-6   # ground ΔT, not 55
+    assert abs(r.by_category["floor"] - 0.05 * 100 * 20) < 1e-6
+
+
+def test_below_grade_no_cooling_gain():
+    # in summer the soil is cooler than indoors -> below-grade surfaces add no cooling load
+    env = geometry.Envelope(surfaces=[geometry.Surface("basement_wall", 100.0),
+                                      geometry.Surface("floor", 100.0),
+                                      geometry.Surface("exterior_wall", 100.0)], volume_ft3=0.0)
+    r = loads.cooling_load(env, _sc_ground())
+    assert r.by_category["basement_wall"] == 0.0
+    assert r.by_category["floor"] == 0.0
+    assert r.by_category["exterior_wall"] > 0.0
+
+
+def test_ground_delta_t_clamped_at_zero():
+    # if soil is warmer than the heating setpoint, a below-grade wall isn't a heat loss
+    d = sidecar.DesignConditions(65, 15, 50, ground_temp_f=70)
+    assert d.ground_heating_delta_t == 0.0
+
+
 def test_per_room_internal_only_for_conditioned():
     # internal (occupant/appliance) sensible is shared across conditioned rooms by
     # area; an unconditioned room gets none

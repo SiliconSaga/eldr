@@ -18,6 +18,9 @@ INTERNAL_LATENT_PER_OCCUPANT = 200.0    # BTU/hr latent per person
 APPLIANCE_SENSIBLE_BTUH = 1200.0        # lights + appliances baseline
 LATENT_GRAINS_DIFF = 30.0               # indoor/outdoor humidity ratio diff (grains/lb)
 COOLING_SUPPLY_DT_F = 20.0              # supply-air below room, for cooling CFM
+# Surfaces coupled to soil rather than outdoor air — they see the ground ΔT, not the
+# air ΔT (a basement wall against 50°F soil loses far less than one against 15°F air).
+GROUND_COUPLED_CATEGORIES = frozenset({"basement_wall", "floor"})
 
 
 @dataclass(frozen=True)
@@ -49,22 +52,37 @@ class RoomLoad:
     cfm: float
 
 
-def _conduction(surfaces, assemblies, dt):
-    """UA·ΔT conduction over a surface list; returns (total, by_category)."""
+def _conduction(surfaces, assemblies, dt_for):
+    """UA·ΔT conduction over a surface list; `dt_for(category)` gives the ΔT to use.
+
+    Per-category ΔT lets below-grade surfaces use the ground ΔT while everything
+    else uses the outdoor-air ΔT. Returns (total, by_category).
+    """
     by_category: dict[str, float] = {}
     total = 0.0
     for s in surfaces:
         if s.category not in assemblies:
             raise KeyError(f"no assembly U-value for category '{s.category}' in side-car")
-        q = assemblies[s.category] * s.area_ft2 * dt
+        q = assemblies[s.category] * s.area_ft2 * dt_for(s.category)
         by_category[s.category] = by_category.get(s.category, 0.0) + q
         total += q
     return total, by_category
 
 
+def _heating_dt_for(design):
+    """ΔT resolver for heating: ground ΔT below grade, outdoor-air ΔT elsewhere."""
+    air, ground = design.heating_delta_t, design.ground_heating_delta_t
+    return lambda cat: ground if cat in GROUND_COUPLED_CATEGORIES else air
+
+
+def _cooling_dt_for(cooling_delta_t):
+    """ΔT resolver for cooling: below-grade surfaces see cool soil, so no gain (0)."""
+    return lambda cat: 0.0 if cat in GROUND_COUPLED_CATEGORIES else cooling_delta_t
+
+
 def heating_load(env: geometry.Envelope, sc: sidecar.SideCar) -> HeatingResult:
     dt = sc.design.heating_delta_t
-    conduction, by_category = _conduction(env.surfaces, sc.assemblies, dt)
+    conduction, by_category = _conduction(env.surfaces, sc.assemblies, _heating_dt_for(sc.design))
 
     infil_cfm = sc.infiltration_ach * env.volume_ft3 / 60.0
     infiltration = units.SENSIBLE_FACTOR * infil_cfm * dt
@@ -93,7 +111,7 @@ def cooling_load(env: geometry.Envelope, sc: sidecar.SideCar) -> CoolingResult:
         raise ValueError("cooling requires a `cooling` block in the side-car")
     c = sc.cooling
     dt = c.cooling_delta_t
-    conduction, by_category = _conduction(env.surfaces, sc.assemblies, dt)
+    conduction, by_category = _conduction(env.surfaces, sc.assemblies, _cooling_dt_for(dt))
 
     # Solar gain per window, using its exact bearing; grouped for display by octant.
     solar = 0.0
@@ -127,20 +145,22 @@ def per_room_loads(env: geometry.Envelope, sc: sidecar.SideCar) -> list[RoomLoad
     shared across conditioned rooms by floor area; unconditioned rooms get none.
     """
     heat_dt = sc.design.heating_delta_t
+    heat_dt_for = _heating_dt_for(sc.design)
     cool = sc.cooling
+    cool_dt_for = _cooling_dt_for(cool.cooling_delta_t) if cool is not None else None
     cond_area = sum(r.area_ft2 for r in env.rooms if r.conditioned) or 1.0
     internal_total = (cool.occupants * INTERNAL_SENSIBLE_PER_OCCUPANT
                       + APPLIANCE_SENSIBLE_BTUH) if cool is not None else 0.0
 
     out: list[RoomLoad] = []
     for r in env.rooms:
-        h_cond, _ = _conduction(r.surfaces, sc.assemblies, heat_dt)
+        h_cond, _ = _conduction(r.surfaces, sc.assemblies, heat_dt_for)
         h_infil = units.SENSIBLE_FACTOR * (sc.infiltration_ach * r.volume_ft3 / 60.0) * heat_dt
         heating = h_cond + h_infil
 
         cooling = 0.0
         if cool is not None:
-            c_cond, _ = _conduction(r.surfaces, sc.assemblies, cool.cooling_delta_t)
+            c_cond, _ = _conduction(r.surfaces, sc.assemblies, cool_dt_for)
             solar = sum(area * cool.shgc * solar_hgf(b)
                         for b, area in r.windows_by_bearing.items())
             internal = internal_total * (r.area_ft2 / cond_area) if r.conditioned else 0.0

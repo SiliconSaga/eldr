@@ -4,6 +4,7 @@ design:
   # outdoor_heating_99_f:     # omitted -> looked up from the model's lat/long (nearest station).
   #                           # Set it here to override with your exact ACCA design temp.
   supply_air_rise_f: 50       # supply-air temperature rise over room, for CFM sizing
+  ground_temp_f: 50           # deep-soil temp; below-grade walls + slab couple to this, not outdoor air
 infiltration:
   ach: 0.5                    # whole-house air changes/hour (estimate; blower-door later)
 assemblies:                   # U-value, BTU/(hr*ft^2*F), per surface category
