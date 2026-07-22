@@ -51,5 +51,9 @@ def _haversine_mi(lat1, lon1, lat2, lon2) -> float:
 
 def nearest_station(lat_deg: float, lon_deg: float) -> Station:
     """Return the design station nearest a lat/long (decimal degrees)."""
+    if not math.isfinite(lat_deg) or not -90 <= lat_deg <= 90:
+        raise ValueError("latitude must be finite and between -90 and 90")
+    if not math.isfinite(lon_deg) or not -180 <= lon_deg <= 180:
+        raise ValueError("longitude must be finite and between -180 and 180")
     return min(DESIGN_STATIONS,
                key=lambda s: _haversine_mi(lat_deg, lon_deg, s.lat, s.lon))

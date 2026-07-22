@@ -49,10 +49,11 @@ class Surface:
 class Envelope:
     surfaces: list[Surface]
     volume_ft3: float
-    # window area (ft^2) keyed by true compass bearing in whole degrees (0=N, 90=E,
-    # clockwise). Continuous — solar gain reads the exact bearing, not a bucket.
+    # window area (ft^2) keyed by exact true compass bearing in degrees (0=N, 90=E,
+    # clockwise). Continuous — solar gain reads the exact bearing, not a bucket;
+    # windows on one wall share the identical computed bearing so they group cleanly.
     # Reflects the home's compass northDirection (0 by default until set from a survey).
-    windows_by_bearing: dict[int, float] = field(default_factory=dict)
+    windows_by_bearing: dict[float, float] = field(default_factory=dict)
     # decimal degrees from the home's compass (N positive, E positive); None if absent.
     latitude: float | None = None
     longitude: float | None = None
@@ -131,7 +132,8 @@ def extract_envelope(home_path: str) -> Envelope:
     # SH3D stores compass latitude/longitude in radians; expose them in degrees.
     latitude = longitude = None
     if compass is not None:
-        lat_rad, lon_rad = compass.get("latitude"), compass.get("longitude")
+        # `or None` treats empty-string attrs as absent, matching northDirection above.
+        lat_rad, lon_rad = compass.get("latitude") or None, compass.get("longitude") or None
         latitude = math.degrees(float(lat_rad)) if lat_rad is not None else None
         longitude = math.degrees(float(lon_rad)) if lon_rad is not None else None
         if latitude is not None and (not math.isfinite(latitude) or not -90 <= latitude <= 90):
@@ -214,8 +216,7 @@ def extract_envelope(home_path: str) -> Envelope:
         wall_area_cm2[host] = max(0.0, wall_area_cm2[host] - area_cm2)
         if category == "window":
             minx, maxx, miny, maxy = level_extent[dw.get("level")]
-            bearing = _window_bearing(wall_by_id[host], (minx + maxx) / 2, (miny + maxy) / 2, north_dir)
-            key = round(bearing) % 360
+            key = _window_bearing(wall_by_id[host], (minx + maxx) / 2, (miny + maxy) / 2, north_dir)
             windows_by_bearing[key] = windows_by_bearing.get(key, 0.0) + area_ft2
 
     for wid, area_cm2 in wall_area_cm2.items():

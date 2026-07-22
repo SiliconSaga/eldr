@@ -68,8 +68,9 @@ def test_window_bearing_south(tmp_path):
     p.write_text(FIXTURE)
     env = geometry.extract_envelope(str(p))
     from eldr import units
-    assert set(env.windows_by_bearing) == {180}
-    assert abs(env.windows_by_bearing[180] - units.sqcm_to_sqft(100 * 100)) < 1e-6
+    (bearing, area), = env.windows_by_bearing.items()   # exactly one wall has glass
+    assert abs(bearing - 180) < 1e-6
+    assert abs(area - units.sqcm_to_sqft(100 * 100)) < 1e-6
 
 
 def test_window_bearing_rotated_compass(tmp_path):
@@ -78,7 +79,9 @@ def test_window_bearing_rotated_compass(tmp_path):
     p = tmp_path / "Home.xml"
     p.write_text(_fixture_with_compass("1.57079632679"))
     env = geometry.extract_envelope(str(p))
-    assert set(env.windows_by_bearing) == {90}
+    keys = list(env.windows_by_bearing)
+    assert len(keys) == 1
+    assert abs(keys[0] - 90) < 1e-6
 
 
 def test_compass_latlong_to_degrees(tmp_path):
@@ -94,15 +97,20 @@ def test_compass_latlong_to_degrees(tmp_path):
     assert env.longitude is not None and abs(env.longitude - -74.0) < 0.1
 
 
-def test_out_of_range_latitude_rejected(tmp_path):
-    # latitude in radians that converts to > 90 deg is invalid model data
+@pytest.mark.parametrize("coords", [
+    "latitude='3.0' longitude='0'",     # lat ~172deg -> out of range
+    "latitude='0' longitude='4.0'",     # lon ~229deg -> out of range
+    "latitude='nan' longitude='0'",     # non-finite latitude
+    "latitude='0' longitude='inf'",     # non-finite longitude
+])
+def test_invalid_compass_coords_rejected(tmp_path, coords):
     p = tmp_path / "Home.xml"
     p.write_text(FIXTURE.replace(
         "<home version='7400' name='t' wallHeight='300'>",
         "<home version='7400' name='t' wallHeight='300'>\n"
-        "  <compass x='0' y='0' diameter='100' latitude='3.0' longitude='0'/>",  # 3 rad ~ 172 deg
+        f"  <compass x='0' y='0' diameter='100' {coords}/>",
     ))
-    with pytest.raises(ValueError, match="latitude"):
+    with pytest.raises(ValueError, match="itude"):   # latitude or longitude
         geometry.extract_envelope(str(p))
 
 
