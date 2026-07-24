@@ -46,6 +46,28 @@ class Surface:
 
 
 @dataclass(frozen=True)
+class Furniture:
+    """A placed furniture item — enough to locate an air-handler unit (plan cm)."""
+    name: str
+    x_cm: float
+    y_cm: float
+    level_id: str
+
+
+@dataclass(frozen=True)
+class Room:
+    """A per-room sub-envelope for Manual J 1c (load-based per-room CFM)."""
+    name: str
+    level_id: str
+    area_ft2: float
+    centroid_cm: tuple[float, float]              # (x, y) in plan cm
+    conditioned: bool                             # False on garage/crawlspace levels
+    surfaces: list[Surface] = field(default_factory=list)      # its attributed envelope
+    volume_ft3: float = 0.0
+    windows_by_bearing: dict[float, float] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class Envelope:
     surfaces: list[Surface]
     volume_ft3: float
@@ -57,10 +79,115 @@ class Envelope:
     # decimal degrees from the home's compass (N positive, E positive); None if absent.
     latitude: float | None = None
     longitude: float | None = None
+    # per-room sub-envelopes (empty if the model has no rooms) — for Manual J 1c.
+    rooms: list[Room] = field(default_factory=list)
+    # placed furniture (to locate an air-handler unit) and per-level base elevation (cm).
+    furniture: list[Furniture] = field(default_factory=list)
+    level_elevations: dict[str, float] = field(default_factory=dict)
 
 
 def _f(el, attr):
     return float(el.get(attr))
+
+
+def _polygon_area_centroid(points):
+    """Shoelace area (cm^2, absolute) + centroid (cm) of a polygon [(x, y), ...]."""
+    a2 = cx = cy = 0.0
+    n = len(points)
+    for i in range(n):
+        x0, y0 = points[i]
+        x1, y1 = points[(i + 1) % n]
+        cross = x0 * y1 - x1 * y0
+        a2 += cross
+        cx += (x0 + x1) * cross
+        cy += (y0 + y1) * cross
+    if a2 == 0.0:                                  # degenerate -> vertex average
+        return 0.0, (sum(p[0] for p in points) / n, sum(p[1] for p in points) / n)
+    return abs(a2 / 2.0), (cx / (3.0 * a2), cy / (3.0 * a2))
+
+
+def _dist_point_to_polygon_cm(px, py, points):
+    """Min distance (cm) from a point to any edge of a polygon [(x, y), ...]."""
+    best = float("inf")
+    n = len(points)
+    for i in range(n):
+        ax, ay = points[i]
+        bx, by = points[(i + 1) % n]
+        dx, dy = bx - ax, by - ay
+        seg2 = dx * dx + dy * dy
+        if seg2 == 0.0:
+            d = ((px - ax) ** 2 + (py - ay) ** 2) ** 0.5
+        else:
+            t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / seg2))
+            d = ((px - (ax + t * dx)) ** 2 + (py - (ay + t * dy)) ** 2) ** 0.5
+        best = min(best, d)
+    return best
+
+
+# Spacing (cm) between sample points when splitting a wall's area among the rooms it
+# runs behind. Density-based rather than a fixed count, so a narrow room along a long
+# facade still gets sampled (bounded miss). Clamped to at least _WALL_MIN_SAMPLES.
+_WALL_SAMPLE_SPACING_CM = 25.0
+_WALL_MIN_SAMPLES = 7
+
+
+def _wall_samples(w):
+    """Number of split-samples for a wall — one per ~25 cm, at least a floor count."""
+    return max(_WALL_MIN_SAMPLES, math.ceil(_wall_length_cm(w) / _WALL_SAMPLE_SPACING_CM))
+
+
+def _sample_segment(w, k):
+    """k points at the centers of k equal pieces of a wall (no endpoints)."""
+    ax, ay = _f(w, "xStart"), _f(w, "yStart")
+    bx, by = _f(w, "xEnd"), _f(w, "yEnd")
+    return [(ax + (bx - ax) * (i + 0.5) / k, ay + (by - ay) * (i + 0.5) / k)
+            for i in range(k)]
+
+
+def _point_in_polygon(px, py, points):
+    """Ray-cast test: is point (px, py) inside polygon [(x, y), ...]?"""
+    inside = False
+    n = len(points)
+    j = n - 1
+    for i in range(n):
+        xi, yi = points[i]
+        xj, yj = points[j]
+        if (yi > py) != (yj > py):
+            x_cross = xi + (xj - xi) * (py - yi) / (yj - yi)
+            if px < x_cross:
+                inside = not inside
+        j = i
+    return inside
+
+
+# How far (cm) past a wall face to probe for a room on that side, when classifying a
+# wall as envelope vs partition — clears the wall's half-thickness plus a margin.
+_SIDE_PROBE_MARGIN_CM = 15.0
+
+
+def _conditioned_room_on_sides(w, rooms):
+    """(left, right): does a *conditioned* room sit on each side of wall `w`?
+
+    Probes a point just past each wall face (offset along the wall normal) and tests
+    it against the conditioned room polygons. A wall with a conditioned room on exactly
+    one side is on the thermal envelope; conditioned on both = interior partition;
+    neither (e.g. a garage/crawlspace wall) is not part of the conditioned envelope.
+    """
+    ax, ay = _f(w, "xStart"), _f(w, "yStart")
+    bx, by = _f(w, "xEnd"), _f(w, "yEnd")
+    dx, dy = bx - ax, by - ay
+    length = (dx * dx + dy * dy) ** 0.5
+    if length == 0.0:
+        return False, False
+    nx, ny = -dy / length, dx / length            # unit normal
+    mx, my = (ax + bx) / 2.0, (ay + by) / 2.0
+    off = _f(w, "thickness") / 2.0 + _SIDE_PROBE_MARGIN_CM
+    p_left = (mx + nx * off, my + ny * off)
+    p_right = (mx - nx * off, my - ny * off)
+    cond = [r for r in rooms if r["conditioned"]]
+    left_in = any(_point_in_polygon(p_left[0], p_left[1], r["points"]) for r in cond)
+    right_in = any(_point_in_polygon(p_right[0], p_right[1], r["points"]) for r in cond)
+    return left_in, right_in
 
 
 def _wall_midpoint(w):
@@ -123,6 +250,40 @@ def _window_bearing(w, cx, cy, north_dir):
     return math.degrees(plan_bearing - north_dir) % 360.0
 
 
+def _unconditioned_level(name):
+    """A level whose rooms carry no supply air (garage / crawlspace)."""
+    n = (name or "").lower()
+    return n.startswith("garage") or n.startswith("crawlspace")
+
+
+def _parse_rooms(root, levels):
+    """Parse <room> polygons into raw room records grouped by level.
+
+    Returns {level_id: [ {id, name, level_id, points, area_ft2, centroid_cm,
+    conditioned}, ... ]}. Rooms with fewer than 3 points are skipped (degenerate).
+    """
+    by_level: dict[str, list] = {}
+    for r in root.findall("room"):
+        pts = [(_f(p, "x"), _f(p, "y")) for p in r.findall("point")]
+        if len(pts) < 3:
+            continue
+        lid = r.get("level")
+        area_cm2, centroid = _polygon_area_centroid(pts)
+        if area_cm2 <= 0.0:                    # collinear / repeated points -> degenerate
+            continue
+        lv = levels.get(lid)
+        by_level.setdefault(lid, []).append({
+            "id": r.get("id"),
+            "name": r.get("name") or "(unnamed)",
+            "level_id": lid,
+            "points": pts,
+            "area_ft2": units.sqcm_to_sqft(area_cm2),
+            "centroid_cm": centroid,
+            "conditioned": not _unconditioned_level(lv.get("name") if lv is not None else None),
+        })
+    return by_level
+
+
 def extract_envelope(home_path: str) -> Envelope:
     """Parse an exploded Home.xml or a packed .sh3d into a single-zone Envelope."""
     root = _read_home_root(home_path)
@@ -147,6 +308,13 @@ def extract_envelope(home_path: str) -> Envelope:
         walls_by_level.setdefault(w.get("level"), []).append(w)
     wall_by_id = {w.get("id"): w for ws in walls_by_level.values() for w in ws}
 
+    rooms_by_level = _parse_rooms(root, levels)
+    room_by_id = {rm["id"]: rm for lst in rooms_by_level.values() for rm in lst}
+    room_gross_wall: dict[str, dict[str, float]] = {rid: {} for rid in room_by_id}   # ft^2 by cat
+    room_openings: dict[str, float] = {rid: 0.0 for rid in room_by_id}               # ft^2 total
+    room_doors: dict[str, float] = {rid: 0.0 for rid in room_by_id}                  # ft^2
+    room_windows: dict[str, dict[float, float]] = {rid: {} for rid in room_by_id}    # ft^2 by bearing
+
     surfaces: list[Surface] = []
     windows_by_bearing: dict[float, float] = {}
     # Track net exterior wall area per (level, category) so we can subtract openings.
@@ -162,15 +330,40 @@ def extract_envelope(home_path: str) -> Envelope:
         level_extent[level_id] = (minx, maxx, miny, maxy)
         lv = levels[level_id]
         is_basement = (lv.get("name") or "").lower().startswith("basement")
+        rooms_here = rooms_by_level.get(level_id, [])
+        conditioned_here = [r for r in rooms_here if r["conditioned"]]
         for w in walls:
-            mx, my = _wall_midpoint(w)
-            exterior = (abs(mx - minx) < 1.0 or abs(mx - maxx) < 1.0
-                        or abs(my - miny) < 1.0 or abs(my - maxy) < 1.0)
+            # A wall is on the thermal envelope if a *conditioned* room sits on exactly
+            # one side of it (conditioned inside, outdoors out). Following the room-
+            # polygon outline catches perimeter walls on an extension/wing that sit
+            # inside the level's bounding rectangle, and excludes walls of unconditioned
+            # space (garage/crawlspace) entirely. Levels with no rooms fall back to the
+            # bounding-box edge test.
+            if rooms_here:
+                left_in, right_in = _conditioned_room_on_sides(w, rooms_here)
+                exterior = left_in != right_in
+            else:
+                mx, my = _wall_midpoint(w)
+                exterior = (abs(mx - minx) < 1.0 or abs(mx - maxx) < 1.0
+                            or abs(my - miny) < 1.0 or abs(my - maxy) < 1.0)
             if not exterior:
                 continue
+            cat = "basement_wall" if is_basement else "exterior_wall"
             area = _wall_length_cm(w) * _f(w, "height")
             wall_area_cm2[w.get("id")] = area
-            wall_category[w.get("id")] = "basement_wall" if is_basement else "exterior_wall"
+            wall_category[w.get("id")] = cat
+            # Split the wall's gross area among the conditioned rooms it runs behind:
+            # sample along it, assign each point to the nearest conditioned room. A
+            # facade shared by several rooms is divided; a corner-to-corner wall lands
+            # wholly in one.
+            if conditioned_here:
+                k = _wall_samples(w)
+                share = units.sqcm_to_sqft(area) / k
+                for sx, sy in _sample_segment(w, k):
+                    rid = min(conditioned_here,
+                              key=lambda r: _dist_point_to_polygon_cm(sx, sy, r["points"]))["id"]
+                    g = room_gross_wall[rid]
+                    g[cat] = g.get(cat, 0.0) + share
         # volume from footprint x height
         footprint = (maxx - minx) * (maxy - miny)
         volume_ft3 += (units.cm_to_ft(maxx - minx) * units.cm_to_ft(maxy - miny)
@@ -214,10 +407,22 @@ def extract_envelope(home_path: str) -> Envelope:
         category = "window" if "window" in label else "door"
         surfaces.append(Surface(category, area_ft2))
         wall_area_cm2[host] = max(0.0, wall_area_cm2[host] - area_cm2)
+        # Attribute the opening to the nearest room on its level, by its own position.
+        rooms_here = rooms_by_level.get(dw.get("level"), [])
+        rid = None
+        if rooms_here:
+            dx, dy = _f(dw, "x"), _f(dw, "y")
+            rid = min(rooms_here,
+                      key=lambda r: _dist_point_to_polygon_cm(dx, dy, r["points"]))["id"]
+            room_openings[rid] += area_ft2
+            if category == "door":
+                room_doors[rid] += area_ft2
         if category == "window":
             minx, maxx, miny, maxy = level_extent[dw.get("level")]
             key = _window_bearing(wall_by_id[host], (minx + maxx) / 2, (miny + maxy) / 2, north_dir)
             windows_by_bearing[key] = windows_by_bearing.get(key, 0.0) + area_ft2
+            if rid is not None:
+                room_windows[rid][key] = room_windows[rid].get(key, 0.0) + area_ft2
 
     for wid, area_cm2 in wall_area_cm2.items():
         surfaces.append(Surface(wall_category[wid], units.sqcm_to_sqft(area_cm2)))
@@ -226,6 +431,7 @@ def extract_envelope(home_path: str) -> Envelope:
     def level_elev(lid):
         return float(levels[lid].get("elevation"))
 
+    top = bot = None
     if level_extent:
         levels_present = list(level_extent.keys())
         top = max(levels_present, key=level_elev)
@@ -234,6 +440,46 @@ def extract_envelope(home_path: str) -> Envelope:
             minx, maxx, miny, maxy = level_extent[lid]
             surfaces.append(Surface(cat, units.sqcm_to_sqft((maxx - minx) * (maxy - miny))))
 
+    # Assemble each room's sub-envelope. Net wall = its gross wall share minus its own
+    # openings; ceiling/floor mirror the whole-house top-ceiling / bottom-floor model.
+    rooms: list[Room] = []
+    for rid, rm in room_by_id.items():
+        lid = rm["level_id"]
+        surfs: list[Surface] = []
+        openings = room_openings[rid]
+        for scat, gross in room_gross_wall[rid].items():
+            net = max(0.0, gross - openings)
+            openings = max(0.0, openings - gross)   # spill leftover to the next category
+            if net > 0.0:
+                surfs.append(Surface(scat, net))
+        wtot = sum(room_windows[rid].values())
+        if wtot > 0.0:
+            surfs.append(Surface("window", wtot))
+        if room_doors[rid] > 0.0:
+            surfs.append(Surface("door", room_doors[rid]))
+        if lid == top:
+            surfs.append(Surface("ceiling", rm["area_ft2"]))
+        if lid == bot:
+            surfs.append(Surface("floor", rm["area_ft2"]))
+        lv = levels.get(lid)
+        height_ft = units.cm_to_ft(_f(lv, "height")) if lv is not None else 0.0
+        rooms.append(Room(
+            name=rm["name"], level_id=lid, area_ft2=rm["area_ft2"],
+            centroid_cm=rm["centroid_cm"], conditioned=rm["conditioned"],
+            surfaces=surfs, volume_ft3=rm["area_ft2"] * height_ft,
+            windows_by_bearing=room_windows[rid]))
+
+    furniture = [
+        Furniture(name=f.get("name") or "", x_cm=_f(f, "x"), y_cm=_f(f, "y"),
+                  level_id=f.get("level"))
+        # iter (not findall) so furniture nested in a <furnitureGroup> is included —
+        # SH3D gives grouped pieces their own absolute x/y/level.
+        for f in root.iter("pieceOfFurniture")
+        if f.get("x") is not None and f.get("y") is not None
+    ]
+    level_elevations = {lid: float(lv.get("elevation") or 0.0) for lid, lv in levels.items()}
+
     return Envelope(surfaces=surfaces, volume_ft3=volume_ft3,
                     windows_by_bearing=windows_by_bearing,
-                    latitude=latitude, longitude=longitude)
+                    latitude=latitude, longitude=longitude, rooms=rooms,
+                    furniture=furniture, level_elevations=level_elevations)

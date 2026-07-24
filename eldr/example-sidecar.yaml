@@ -4,6 +4,7 @@ design:
   # outdoor_heating_99_f:     # omitted -> looked up from the model's lat/long (nearest station).
   #                           # Set it here to override with your exact ACCA design temp.
   supply_air_rise_f: 50       # supply-air temperature rise over room, for CFM sizing
+  ground_temp_f: 50           # deep-soil temp; below-grade walls + slab couple to this, not outdoor air
 infiltration:
   ach: 0.5                    # whole-house air changes/hour (estimate; blower-door later)
 assemblies:                   # U-value, BTU/(hr*ft^2*F), per surface category
@@ -20,3 +21,15 @@ cooling:                      # optional — enables the Manual J 1b cooling loa
   # outdoor_1_f:              # omitted -> looked up from lat/long (set to override)
   shgc: 0.35                  # window solar heat gain coefficient (double-pane, low-e-ish)
   occupants: 3                # for internal + latent gains
+ducts:                        # optional — enables Manual D duct sizing
+  # Runs are derived per-room from the model's rooms (Manual J 1c): one branch per
+  # conditioned room + a main trunk. These settings tune that:
+  friction_rate: 0.08         # in.wc/100ft — used unless a rate is derived (see below)
+  unit_name: air handler      # furniture-name substring locating the unit; place one in
+  #                             SH3D to get per-run lengths (unit -> room)
+  fitting_factor: 1.5         # straight length -> total effective length (rough; real fittings later)
+  # available_static_pressure: 0.5   # in.wc — set to DERIVE the friction rate (ASP*100 / worst run).
+  #                                    # Off by default: our TEL is straight-length-only, so a derived
+  #                                    # rate runs high. Turn on once you have real equivalent lengths.
+  # runs:                     # optional hand-listed fallback — used only if the model has no rooms
+  #   - {name: main trunk, cfm: 720}
