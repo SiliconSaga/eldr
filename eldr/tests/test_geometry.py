@@ -238,6 +238,21 @@ def test_room_ceiling_floor_and_metadata(tmp_path):
     assert env.level_elevations["L1"] == 100.0 and env.level_elevations["LG"] == 0.0
 
 
+def test_unconditioned_room_walls_excluded_from_envelope(tmp_path):
+    # a garage/crawlspace-level room contributes NO wall to the conditioned envelope
+    p = tmp_path / "Home.xml"
+    p.write_text(ROOM_FIXTURE)
+    env = geometry.extract_envelope(str(p))
+    gar = _rcat(_room(env, "Gar"))
+    assert "exterior_wall" not in gar and "basement_wall" not in gar   # its walls dropped
+    assert "floor" in gar                                              # still the bottom-level floor
+    # whole-house exterior wall == the conditioned rooms' walls only (garage excluded)
+    whole = sum(s.area_ft2 for s in env.surfaces if s.category == "exterior_wall")
+    cond = sum(v for r in env.rooms if r.conditioned
+               for k, v in _rcat(r).items() if k == "exterior_wall")
+    assert whole > 0 and abs(whole - cond) < 1e-6
+
+
 def test_no_rooms_leaves_rooms_empty(tmp_path):
     # the original single-box fixture has no <room> -> rooms is empty (backward compatible)
     p = tmp_path / "Home.xml"

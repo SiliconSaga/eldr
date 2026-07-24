@@ -165,12 +165,13 @@ def _point_in_polygon(px, py, points):
 _SIDE_PROBE_MARGIN_CM = 15.0
 
 
-def _wall_borders_room_on_sides(w, rooms):
-    """(left_in, right_in): does any room sit on each side of wall `w`?
+def _conditioned_room_on_sides(w, rooms):
+    """(left, right): does a *conditioned* room sit on each side of wall `w`?
 
     Probes a point just past each wall face (offset along the wall normal) and tests
-    it against every room polygon. A wall with a room on exactly one side is on the
-    building envelope; a room on both sides is an interior partition.
+    it against the conditioned room polygons. A wall with a conditioned room on exactly
+    one side is on the thermal envelope; conditioned on both = interior partition;
+    neither (e.g. a garage/crawlspace wall) is not part of the conditioned envelope.
     """
     ax, ay = _f(w, "xStart"), _f(w, "yStart")
     bx, by = _f(w, "xEnd"), _f(w, "yEnd")
@@ -183,8 +184,9 @@ def _wall_borders_room_on_sides(w, rooms):
     off = _f(w, "thickness") / 2.0 + _SIDE_PROBE_MARGIN_CM
     p_left = (mx + nx * off, my + ny * off)
     p_right = (mx - nx * off, my - ny * off)
-    left_in = any(_point_in_polygon(p_left[0], p_left[1], r["points"]) for r in rooms)
-    right_in = any(_point_in_polygon(p_right[0], p_right[1], r["points"]) for r in rooms)
+    cond = [r for r in rooms if r["conditioned"]]
+    left_in = any(_point_in_polygon(p_left[0], p_left[1], r["points"]) for r in cond)
+    right_in = any(_point_in_polygon(p_right[0], p_right[1], r["points"]) for r in cond)
     return left_in, right_in
 
 
@@ -329,14 +331,16 @@ def extract_envelope(home_path: str) -> Envelope:
         lv = levels[level_id]
         is_basement = (lv.get("name") or "").lower().startswith("basement")
         rooms_here = rooms_by_level.get(level_id, [])
+        conditioned_here = [r for r in rooms_here if r["conditioned"]]
         for w in walls:
-            # A wall is on the thermal envelope if it borders a room on exactly one
-            # side (room inside, outdoors out). This follows the actual room-polygon
-            # outline, so perimeter walls on an extension/wing are caught even when
-            # they sit inside the level's bounding rectangle. Levels with no rooms
-            # fall back to the bounding-box edge test.
+            # A wall is on the thermal envelope if a *conditioned* room sits on exactly
+            # one side of it (conditioned inside, outdoors out). Following the room-
+            # polygon outline catches perimeter walls on an extension/wing that sit
+            # inside the level's bounding rectangle, and excludes walls of unconditioned
+            # space (garage/crawlspace) entirely. Levels with no rooms fall back to the
+            # bounding-box edge test.
             if rooms_here:
-                left_in, right_in = _wall_borders_room_on_sides(w, rooms_here)
+                left_in, right_in = _conditioned_room_on_sides(w, rooms_here)
                 exterior = left_in != right_in
             else:
                 mx, my = _wall_midpoint(w)
@@ -348,14 +352,15 @@ def extract_envelope(home_path: str) -> Envelope:
             area = _wall_length_cm(w) * _f(w, "height")
             wall_area_cm2[w.get("id")] = area
             wall_category[w.get("id")] = cat
-            # Split the wall's gross area among the rooms it runs behind: sample points
-            # along it, assign each to the nearest room, tally its share. A facade shared
-            # by several rooms is divided; a corner-to-corner wall lands wholly in one.
-            if rooms_here:
+            # Split the wall's gross area among the conditioned rooms it runs behind:
+            # sample along it, assign each point to the nearest conditioned room. A
+            # facade shared by several rooms is divided; a corner-to-corner wall lands
+            # wholly in one.
+            if conditioned_here:
                 k = _wall_samples(w)
                 share = units.sqcm_to_sqft(area) / k
                 for sx, sy in _sample_segment(w, k):
-                    rid = min(rooms_here,
+                    rid = min(conditioned_here,
                               key=lambda r: _dist_point_to_polygon_cm(sx, sy, r["points"]))["id"]
                     g = room_gross_wall[rid]
                     g[cat] = g.get(cat, 0.0) + share
