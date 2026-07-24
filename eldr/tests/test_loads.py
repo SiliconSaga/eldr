@@ -194,6 +194,41 @@ def test_below_grade_warm_ground_adds_cooling():
     assert abs(r.by_category["basement_wall"] - 0.2 * 100 * 15) < 1e-6
 
 
+def test_buffer_wall_heating_fraction_and_u_fallback():
+    # buffer wall: no buffer_wall U -> falls back to exterior_wall U; ΔT = BUFFER_FACTOR × air
+    env = geometry.Envelope(surfaces=[geometry.Surface("buffer_wall", 100.0)], volume_ft3=0.0)
+    sc = sidecar.SideCar(
+        assemblies={"exterior_wall": 0.1},
+        design=sidecar.DesignConditions(70, 20, 50),   # air ΔT 50
+        infiltration_ach=0.0,
+    )
+    r = loads.heating_load(env, sc)
+    assert abs(r.by_category["buffer_wall"] - 0.1 * 100 * (loads.BUFFER_FACTOR * 50)) < 1e-6
+
+
+def test_buffer_wall_explicit_u_wins():
+    env = geometry.Envelope(surfaces=[geometry.Surface("buffer_wall", 100.0)], volume_ft3=0.0)
+    sc = sidecar.SideCar(
+        assemblies={"exterior_wall": 0.1, "buffer_wall": 0.25},
+        design=sidecar.DesignConditions(70, 20, 50),
+        infiltration_ach=0.0,
+    )
+    r = loads.heating_load(env, sc)
+    assert abs(r.by_category["buffer_wall"] - 0.25 * 100 * (loads.BUFFER_FACTOR * 50)) < 1e-6
+
+
+def test_buffer_wall_cooling_fraction():
+    env = geometry.Envelope(surfaces=[geometry.Surface("buffer_wall", 100.0)], volume_ft3=0.0)
+    sc = sidecar.SideCar(
+        assemblies={"exterior_wall": 0.1},
+        design=sidecar.DesignConditions(70, 20, 50),
+        infiltration_ach=0.0,
+        cooling=sidecar.Cooling(indoor_f=75, outdoor_1_f=95, shgc=0.4, occupants=0),
+    )
+    r = loads.cooling_load(env, sc)   # cooling ΔT = 20
+    assert abs(r.by_category["buffer_wall"] - 0.1 * 100 * (loads.BUFFER_FACTOR * 20)) < 1e-6
+
+
 def test_per_room_internal_only_for_conditioned():
     # internal (occupant/appliance) sensible is shared across conditioned rooms by
     # area; an unconditioned room gets none

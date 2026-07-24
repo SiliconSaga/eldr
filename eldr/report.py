@@ -25,6 +25,10 @@ def render_heating(result: loads.HeatingResult, sc: sidecar.SideCar,
     if station is not None:
         lines.append(f"- Design temps from nearest station: **{station.name}** "
                      f"(lat/long from the model — approximate; set your ACCA station for accuracy)")
+    if loads.BUFFER_WALL_CATEGORY in result.by_category:
+        lines.append(f"- ⚠ **Buffer walls** (garage/crawl-adjacent, `buffer_wall` below) are "
+                     f"loaded at **{loads.BUFFER_FACTOR:.0%} of the design ΔT** — the buffer space "
+                     f"floats between indoor and outdoor.")
     lines += [
         "",
         "| Component | Load (BTU/hr) |",

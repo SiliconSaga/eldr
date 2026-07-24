@@ -81,6 +81,20 @@ You scan it, copy the ids of the garage-adjacent walls into the side-car, and ta
 - **Per-buffer-space temperatures** (garage vs. vented crawl vs. attic) — one factor for now.
 - **Per-wall U overrides** in the tag (use the category's assembly U for now).
 
+## Added mid-build: deterministic overview generator
+
+Folded in alongside this feature (owner request): a reproducible replacement for the
+hand-authored demo-overview doc. `eldr <home> <sidecar> --overview` (and
+`overview.render_overview`) assembles the full narrative — ACCA-chain intro, "how
+detailed it gets", the engine's own report body (identical numbers, via the shared
+`cli.analyze`), auto-selected honesty caveats (buffer walls present? no unit? nearest
+station?), an ACCA-compliance path, and a roadmap. Only the framing prose is templated;
+every figure comes from the pipeline, so the write-up can't drift from the engine. The
+old hand-made `docs/2026-07-22-demo-overview.md` is retired.
+
+`cli.analyze()` was extracted as the single pipeline both the report and the overview
+render from.
+
 ## Future (beyond Eldr — plugin era)
 
 - **SH3D wall overlay:** a display mode coloring walls by boundary condition (or random colors to reveal where segments split). No such option exists in SH3D today; it would be a plugin-side feature, landing well after Eldr becomes a full SH3D plugin. Logged here so the idea isn't lost.

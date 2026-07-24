@@ -1,7 +1,7 @@
 """Wire the engine together: a house model + side-car -> heating (+ cooling) report."""
 from __future__ import annotations
 import argparse
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from eldr import geometry, sidecar, loads, report, sizing, climate, ductd, ductmodel
 
 
@@ -25,10 +25,24 @@ def _resolve_climate(sc: sidecar.SideCar, env: geometry.Envelope):
     return replace(sc, design=design, cooling=cooling), station
 
 
-def run(home_path: str, sidecar_path: str) -> str:
-    """Run the full pipeline: a Home.xml or .sh3d + side-car -> report."""
-    env = geometry.extract_envelope(home_path)
+@dataclass(frozen=True)
+class Analysis:
+    """The full computed pipeline — shared by the report and the overview so both
+    render from identical numbers."""
+    env: geometry.Envelope
+    sc: sidecar.SideCar
+    station: climate.Station | None
+    heating: loads.HeatingResult
+    cooling: loads.CoolingResult | None
+    sizing: sizing.SizingResult
+    ducts: ductd.DuctResult | None
+    duct_plan: ductmodel.DuctPlan | None
+
+
+def analyze(home_path: str, sidecar_path: str) -> Analysis:
+    """Run the whole pipeline: a Home.xml or .sh3d + side-car -> computed results."""
     sc = sidecar.load_sidecar(sidecar_path)
+    env = geometry.extract_envelope(home_path, sc.wall_boundaries)
     sc, station = _resolve_climate(sc, env)
     heating = loads.heating_load(env, sc)
     cooling = loads.cooling_load(env, sc) if sc.cooling is not None else None
@@ -44,16 +58,53 @@ def run(home_path: str, sidecar_path: str) -> str:
     elif sc.ducts is not None and sc.ducts.runs:
         ducts = ductd.size_ducts([(r.name, r.cfm) for r in sc.ducts.runs],
                                  friction_rate=sc.ducts.friction_rate)
-    return report.render_heating(heating, sc, sizing=s, cooling=cooling, station=station,
-                                 ducts=ducts, duct_plan=duct_plan)
+    return Analysis(env=env, sc=sc, station=station, heating=heating, cooling=cooling,
+                    sizing=s, ducts=ducts, duct_plan=duct_plan)
+
+
+def run(home_path: str, sidecar_path: str) -> str:
+    """Run the pipeline and render the Markdown report."""
+    a = analyze(home_path, sidecar_path)
+    return report.render_heating(a.heating, a.sc, sizing=a.sizing, cooling=a.cooling,
+                                 station=a.station, ducts=a.ducts, duct_plan=a.duct_plan)
+
+
+def list_walls(home_path: str, sidecar_path: str | None = None) -> str:
+    """Markdown table of every wall + its resolved boundary — to pick ids for tagging."""
+    wall_boundaries = sidecar.load_sidecar(sidecar_path).wall_boundaries if sidecar_path else {}
+    lines = ["# Eldr — walls (id → boundary)", "",
+             "Copy an `id` into the side-car `walls:` block to override its boundary "
+             "(exterior / ground / buffer / interior).", "",
+             "| id | level | endpoints (ft) | length | boundary |",
+             "|---|---|---|---:|---|"]
+    for w in geometry.wall_inventory(home_path, wall_boundaries):
+        src = f"**{w.boundary}** (tagged)" if w.tagged else w.boundary
+        lines.append(f"| `{w.id}` | {w.level_name} | "
+                     f"({w.x0_ft:.1f}, {w.y0_ft:.1f}) → ({w.x1_ft:.1f}, {w.y1_ft:.1f}) | "
+                     f"{w.length_ft:.1f} ft | {src} |")
+    return "\n".join(lines)
 
 
 def main(argv=None):
-    """CLI entry point: parse args and print the report."""
-    ap = argparse.ArgumentParser(prog="eldr", description="Eldr Manual J — heating + cooling loads.")
+    """CLI entry point: parse args and print the report (or the wall listing)."""
+    ap = argparse.ArgumentParser(prog="eldr",
+                                 description="Eldr Manual J — heating + cooling loads + ducts.")
     ap.add_argument("home", help="path to a Sweet Home 3D Home.xml or a packed .sh3d")
-    ap.add_argument("sidecar", help="path to the Eldr side-car YAML")
+    ap.add_argument("sidecar", nargs="?", help="path to the Eldr side-car YAML (required for the report)")
+    ap.add_argument("--walls", action="store_true",
+                    help="list the model's walls + boundaries for hand-tagging, instead of the report")
+    ap.add_argument("--overview", action="store_true",
+                    help="render the full narrative demo overview instead of the terse report")
     args = ap.parse_args(argv)
+    if args.walls:
+        print(list_walls(args.home, args.sidecar))
+        return
+    if args.sidecar is None:
+        ap.error("the report needs a side-car — `eldr <home> <sidecar>` (or use --walls)")
+    if args.overview:
+        from eldr import overview   # lazy: overview imports cli
+        print(overview.render_overview(args.home, args.sidecar))
+        return
     print(run(args.home, args.sidecar))
 
 

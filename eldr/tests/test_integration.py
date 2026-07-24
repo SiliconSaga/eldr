@@ -110,3 +110,21 @@ def test_end_to_end_per_room_and_ducts(tmp_path):
     assert "main trunk" in md
     assert "Air handler" in md            # a unit is placed -> length column + note
     assert "Length" in md
+
+
+def test_list_walls_renders(tmp_path):
+    home = tmp_path / "Home.xml"
+    home.write_text(FIXTURE_ROOMS)
+    md = cli.list_walls(str(home))
+    assert "Eldr — walls" in md
+    assert "w-int" in md and "boundary" in md
+
+
+def test_wall_tag_flows_through_to_report(tmp_path):
+    # a `walls` tag turns the interior partition into a buffer wall in the report
+    home = tmp_path / "Home.xml"
+    home.write_text(FIXTURE_ROOMS)
+    sc = tmp_path / "sc.yaml"
+    sc.write_text(SIDECAR + "walls:\n  w-int: {boundary: buffer}\n")
+    md = cli.run(str(home), str(sc))
+    assert "buffer_wall" in md
