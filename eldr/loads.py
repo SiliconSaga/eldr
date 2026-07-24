@@ -5,6 +5,7 @@ compass bearing (continuous), so west/east glass loads more than north. Constant
 are demo-grade, hardcoded.
 """
 from __future__ import annotations
+from collections.abc import Callable
 from dataclasses import dataclass
 import bisect
 from eldr import geometry, sidecar, units
@@ -69,16 +70,16 @@ def _conduction(surfaces, assemblies, dt_for):
     return total, by_category
 
 
-def _heating_dt_for(design):
+def _heating_dt_for(design) -> Callable[[str], float]:
     """ΔT resolver for heating: ground ΔT below grade, outdoor-air ΔT elsewhere."""
     air, ground = design.heating_delta_t, design.ground_heating_delta_t
     return lambda cat: ground if cat in GROUND_COUPLED_CATEGORIES else air
 
 
-def _cooling_dt_for(design, cooling):
+def _cooling_dt_for(design, cooling) -> Callable[[str], float]:
     """ΔT resolver for cooling: outdoor-air ΔT above grade; below grade the surface
-    sees the soil, so its ΔT is (ground − indoor), clamped at 0. Normally the soil is
-    cooler than the setpoint (a sink → 0); a warmer configured ground adds real gain."""
+    sees the soil, so its ΔT is (ground - indoor), clamped at 0. Normally the soil is
+    cooler than the setpoint (a sink -> 0); a warmer configured ground adds real gain."""
     air = cooling.cooling_delta_t
     ground = max(0.0, design.ground_temp_f - cooling.indoor_f)
     return lambda cat: ground if cat in GROUND_COUPLED_CATEGORIES else air

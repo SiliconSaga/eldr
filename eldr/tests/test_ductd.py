@@ -31,6 +31,15 @@ def test_flags_high_velocity():
     assert run.flag == "high"
 
 
+def test_flags_oversize_beyond_max_standard():
+    # a run needing more than the largest standard size is flagged (the reported
+    # velocity is optimistic because the size is capped)
+    (run,) = ductd.size_ducts([("huge", 20000)], friction_rate=0.08).runs
+    assert run.exact_dia_in > ductd.STANDARD_SIZES[-1]
+    assert run.standard_dia_in == ductd.STANDARD_SIZES[-1]
+    assert run.flag == "oversize"
+
+
 def test_rejects_bad_inputs():
     with pytest.raises(ValueError, match="friction_rate"):
         ductd.size_ducts([("t", 100)], friction_rate=0)

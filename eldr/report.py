@@ -73,9 +73,10 @@ def _per_room_section(plan: ductmodel_mod.DuctPlan, whole_house_cfm: float) -> l
         "",
         f"_Each room's load is from the exterior walls, windows, doors and ceiling/floor "
         f"attributed to it, plus infiltration on its own volume; design CFM is the larger "
-        f"of heating/cooling airflow. Rooms sum to **{room_cfm:,.0f} CFM** vs the whole-house "
-        f"**{whole_house_cfm:,.0f} CFM** — the gap is floor area not yet drawn as rooms "
-        f"(halls, stairs, unfinished space). Draw more rooms and it closes._",
+        f"of heating/cooling airflow. Served rooms sum to **{room_cfm:,.0f} CFM** vs the "
+        f"whole-house **{whole_house_cfm:,.0f} CFM** — the gap is space not carried here: "
+        f"floor area not yet drawn as rooms (halls, stairs, unfinished), plus tiny rooms "
+        f"below the {ductmodel_mod.MIN_RUN_CFM:.0f}-CFM run threshold. Draw more rooms and it closes._",
     ]
     return lines
 
@@ -107,7 +108,7 @@ def _duct_section(dr: ductd_mod.DuctResult,
         lines += ["", "| Run | CFM | Exact dia | Duct | Velocity | Length | Drop |",
                   "|---|---:|---:|---:|---:|---:|---:|"]
         for r in dr.runs:
-            flag = " ⚠" if r.flag == "high" else ""
+            flag = f" ⚠{r.flag}" if r.flag else ""
             length = "—" if r.length_ft is None else f"{r.length_ft:,.0f} ft"
             drop = "—" if r.pressure_drop_inwc is None else f"{r.pressure_drop_inwc:.3f}″"
             lines.append(f"| {r.name} | {r.cfm:,.0f} | {r.exact_dia_in:.1f}″ | "
@@ -117,7 +118,7 @@ def _duct_section(dr: ductd_mod.DuctResult,
         lines += ["", "| Run | CFM | Exact dia | Duct | Velocity |",
                   "|---|---:|---:|---:|---:|"]
         for r in dr.runs:
-            flag = " ⚠" if r.flag == "high" else ""
+            flag = f" ⚠{r.flag}" if r.flag else ""
             lines.append(f"| {r.name} | {r.cfm:,.0f} | {r.exact_dia_in:.1f}″ | "
                          f"**{r.standard_dia_in}″** | {r.velocity_fpm:,.0f} fpm{flag} |")
     lines += [

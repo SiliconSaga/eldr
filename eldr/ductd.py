@@ -79,8 +79,15 @@ def size_ducts(runs, friction_rate: float = DEFAULT_FRICTION_RATE,
         if length is not None and (not math.isfinite(length) or length < 0):
             raise ValueError(f"run '{name}': length must be finite and >= 0")
         drop = None if length is None else friction_rate * length / 100.0
+        # "oversize" = the run needs more than the largest standard size (std is capped,
+        # so the reported velocity is optimistic). Flag it ahead of a mere high velocity.
+        if exact > STANDARD_SIZES[-1]:
+            flag = "oversize"
+        elif vel > VELOCITY_HIGH_FPM:
+            flag = "high"
+        else:
+            flag = ""
         sized.append(DuctRun(name=name, cfm=cfm, exact_dia_in=exact,
-                             standard_dia_in=std, velocity_fpm=vel,
-                             flag="high" if vel > VELOCITY_HIGH_FPM else "",
+                             standard_dia_in=std, velocity_fpm=vel, flag=flag,
                              length_ft=length, pressure_drop_inwc=drop))
     return DuctResult(friction_rate=friction_rate, runs=tuple(sized))

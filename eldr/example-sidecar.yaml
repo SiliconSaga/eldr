@@ -25,8 +25,8 @@ ducts:                        # optional — enables Manual D duct sizing
   # Runs are derived per-room from the model's rooms (Manual J 1c): one branch per
   # conditioned room + a main trunk. These settings tune that:
   friction_rate: 0.08         # in.wc/100ft — used unless a rate is derived (see below)
-  unit_name: air handler      # furniture-name substring that locates the air-handler unit;
-  #                             # place one in SH3D to get run lengths (unit -> room)
+  unit_name: air handler      # furniture-name substring locating the unit; place one in
+  #                             SH3D to get per-run lengths (unit -> room)
   fitting_factor: 1.5         # straight length -> total effective length (rough; real fittings later)
   # available_static_pressure: 0.5   # in.wc — set to DERIVE the friction rate (ASP*100 / worst run).
   #                                    # Off by default: our TEL is straight-length-only, so a derived

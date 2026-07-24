@@ -166,7 +166,7 @@ _SIDE_PROBE_MARGIN_CM = 15.0
 
 
 def _wall_borders_room_on_sides(w, rooms):
-    """(left_in, right_in): does a conditioned room sit on each side of wall `w`?
+    """(left_in, right_in): does any room sit on each side of wall `w`?
 
     Probes a point just past each wall face (offset along the wall normal) and tests
     it against every room polygon. A wall with a room on exactly one side is on the
