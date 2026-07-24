@@ -301,6 +301,19 @@ NARROW_FIXTURE = textwrap.dedent("""\
 """)
 
 
+def test_grouped_furniture_is_found(tmp_path):
+    # a pieceOfFurniture nested in a <furnitureGroup> must still be scanned (iter, not findall)
+    xml = ROOM_FIXTURE.replace(
+        "<pieceOfFurniture id='ah1' level='L1' name='Air Handler' x='250' y='250' width='60' depth='60' height='90'/>",
+        "<furnitureGroup id='g1' level='L1' name='Mechanicals'>"
+        "<pieceOfFurniture id='ah1' level='L1' name='Air Handler' x='250' y='250' width='60' depth='60' height='90'/>"
+        "</furnitureGroup>")
+    p = tmp_path / "Home.xml"
+    p.write_text(xml)
+    env = geometry.extract_envelope(str(p))
+    assert any(f.name == "Air Handler" for f in env.furniture)
+
+
 def test_adaptive_sampling_gives_narrow_room_its_facade_share(tmp_path):
     p = tmp_path / "Home.xml"
     p.write_text(NARROW_FIXTURE)

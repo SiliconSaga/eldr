@@ -180,6 +180,20 @@ def test_ground_delta_t_clamped_at_zero():
     assert d.ground_heating_delta_t == 0.0
 
 
+def test_below_grade_warm_ground_adds_cooling():
+    # a configured soil warmer than the cooling setpoint DOES drive below-grade gain
+    # (ground 90 > indoor 75 -> ΔT 15), not the usual clamp-to-zero
+    env = geometry.Envelope(surfaces=[geometry.Surface("basement_wall", 100.0)], volume_ft3=0.0)
+    sc = sidecar.SideCar(
+        assemblies={"basement_wall": 0.2},
+        design=sidecar.DesignConditions(70, 15, 50, ground_temp_f=90),
+        infiltration_ach=0.0,
+        cooling=sidecar.Cooling(indoor_f=75, outdoor_1_f=95, shgc=0.4, occupants=0),
+    )
+    r = loads.cooling_load(env, sc)
+    assert abs(r.by_category["basement_wall"] - 0.2 * 100 * 15) < 1e-6
+
+
 def test_per_room_internal_only_for_conditioned():
     # internal (occupant/appliance) sensible is shared across conditioned rooms by
     # area; an unconditioned room gets none

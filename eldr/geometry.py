@@ -467,7 +467,9 @@ def extract_envelope(home_path: str) -> Envelope:
     furniture = [
         Furniture(name=f.get("name") or "", x_cm=_f(f, "x"), y_cm=_f(f, "y"),
                   level_id=f.get("level"))
-        for f in root.findall("pieceOfFurniture")
+        # iter (not findall) so furniture nested in a <furnitureGroup> is included —
+        # SH3D gives grouped pieces their own absolute x/y/level.
+        for f in root.iter("pieceOfFurniture")
         if f.get("x") is not None and f.get("y") is not None
     ]
     level_elevations = {lid: float(lv.get("elevation") or 0.0) for lid, lv in levels.items()}

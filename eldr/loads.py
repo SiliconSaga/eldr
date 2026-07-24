@@ -75,9 +75,13 @@ def _heating_dt_for(design):
     return lambda cat: ground if cat in GROUND_COUPLED_CATEGORIES else air
 
 
-def _cooling_dt_for(cooling_delta_t):
-    """ΔT resolver for cooling: below-grade surfaces see cool soil, so no gain (0)."""
-    return lambda cat: 0.0 if cat in GROUND_COUPLED_CATEGORIES else cooling_delta_t
+def _cooling_dt_for(design, cooling):
+    """ΔT resolver for cooling: outdoor-air ΔT above grade; below grade the surface
+    sees the soil, so its ΔT is (ground − indoor), clamped at 0. Normally the soil is
+    cooler than the setpoint (a sink → 0); a warmer configured ground adds real gain."""
+    air = cooling.cooling_delta_t
+    ground = max(0.0, design.ground_temp_f - cooling.indoor_f)
+    return lambda cat: ground if cat in GROUND_COUPLED_CATEGORIES else air
 
 
 def heating_load(env: geometry.Envelope, sc: sidecar.SideCar) -> HeatingResult:
@@ -110,8 +114,7 @@ def cooling_load(env: geometry.Envelope, sc: sidecar.SideCar) -> CoolingResult:
     if sc.cooling is None:
         raise ValueError("cooling requires a `cooling` block in the side-car")
     c = sc.cooling
-    dt = c.cooling_delta_t
-    conduction, by_category = _conduction(env.surfaces, sc.assemblies, _cooling_dt_for(dt))
+    conduction, by_category = _conduction(env.surfaces, sc.assemblies, _cooling_dt_for(sc.design, c))
 
     # Solar gain per window, using its exact bearing; grouped for display by octant.
     solar = 0.0
@@ -147,7 +150,7 @@ def per_room_loads(env: geometry.Envelope, sc: sidecar.SideCar) -> list[RoomLoad
     heat_dt = sc.design.heating_delta_t
     heat_dt_for = _heating_dt_for(sc.design)
     cool = sc.cooling
-    cool_dt_for = _cooling_dt_for(cool.cooling_delta_t) if cool is not None else None
+    cool_dt_for = _cooling_dt_for(sc.design, cool) if cool is not None else None
     cond_area = sum(r.area_ft2 for r in env.rooms if r.conditioned) or 1.0
     internal_total = (cool.occupants * INTERNAL_SENSIBLE_PER_OCCUPANT
                       + APPLIANCE_SENSIBLE_BTUH) if cool is not None else 0.0
