@@ -537,6 +537,10 @@ def wall_inventory(home_path: str, wall_boundaries: dict[str, str] | None = None
     walls_by_level: dict[str, list] = {}
     for w in root.findall("wall"):
         walls_by_level.setdefault(w.get("level"), []).append(w)
+    unknown = set(wall_boundaries) - {w.get("id") for ws in walls_by_level.values() for w in ws}
+    if unknown:
+        warnings.warn(f"side-car `walls` reference unknown wall ids (redrawn or typo'd?): "
+                      f"{sorted(unknown)}", stacklevel=2)
     rooms_by_level = _parse_rooms(root, levels)
 
     out: list[WallInfo] = []

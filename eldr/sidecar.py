@@ -168,7 +168,9 @@ def load_sidecar(path: str) -> SideCar:
             if not isinstance(spec, dict):
                 raise ValueError(f"walls['{wid}'] must be a mapping with a 'boundary' key")
             boundary = _require(spec, "boundary", f"walls['{wid}']")
-            if boundary not in WALL_BOUNDARIES:
+            # isinstance guard first: an unhashable list/mapping would make the set
+            # membership raise TypeError instead of our clean schema error.
+            if not isinstance(boundary, str) or boundary not in WALL_BOUNDARIES:
                 raise ValueError(f"walls['{wid}'].boundary must be one of "
                                  f"{sorted(WALL_BOUNDARIES)} (got {boundary!r})")
             wall_boundaries[str(wid)] = boundary

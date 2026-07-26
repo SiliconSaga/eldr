@@ -290,3 +290,10 @@ def test_walls_rejects_missing_boundary_key(tmp_path):
     body = _VALID + "    walls:\n      wall-abc: {}\n"
     with pytest.raises(ValueError, match="boundary"):
         sidecar.load_sidecar(_write(tmp_path, body))
+
+
+def test_walls_rejects_unhashable_boundary(tmp_path):
+    # an unhashable YAML value (list) must give a clean schema error, not a TypeError
+    body = _VALID + "    walls:\n      wall-abc: {boundary: [a, b]}\n"
+    with pytest.raises(ValueError, match="boundary"):
+        sidecar.load_sidecar(_write(tmp_path, body))

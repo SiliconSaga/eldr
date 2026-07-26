@@ -45,21 +45,21 @@ walls:                          # optional — explicit per-wall boundary overri
 
 ## Buffer factor — prominent by design
 
-- A single named constant, `BUFFER_DELTA_FRACTION = 0.5` (a garage floats ~midway between indoor and outdoor), with a loud comment. Demo-grade; a later knob can make it per-space.
+- A single named constant, `BUFFER_FACTOR = 0.5` (a garage floats ~midway between indoor and outdoor), with a loud comment. Demo-grade; a later knob can make it per-space.
 - The **report echoes it** whenever any buffer wall exists: e.g. "_Buffer walls (garage/crawl-adjacent): 3, at 50% of design ΔT._" — so the assumption is never silent.
 - Documented in the README and the example side-car.
 
-## Discovery helper — `eldr walls <model>`
+## Discovery helper — `eldr <model> [<sidecar>] --walls`
 
-SH3D doesn't surface wall UUIDs, so tagging by id needs tooling. Add a subcommand that lists every wall:
+SH3D doesn't surface wall UUIDs, so tagging by id needs tooling. The `--walls` flag lists every wall with its **resolved** boundary (a side-car tag if present, else the inferred value). Pass the side-car too to see current tags reflected:
 
+```text
+| id                 | level | endpoints (ft)          | length  | boundary          |
+| wall-ee233fd-...    | Main  | (23.2, 27.0) → (23.2, 42.9) | 15.9 ft | exterior          |
+| wall-7a1b-...       | Main  | (10.0, 5.0) → (18.0, 5.0)   | 8.0 ft  | **buffer** (tagged) |
 ```
-id                level      endpoints (ft)          length   inferred
-wall-ee233fd-...  Main       (23.2,27.0)-(23.2,42.9)  15.9 ft  exterior
-...
-```
 
-You scan it, copy the ids of the garage-adjacent walls into the side-car, and tag them `buffer`. Shows the **inferred** boundary so you only override what's wrong or unseeable.
+You scan it, copy the ids of the garage-adjacent walls into the side-car, and tag them `buffer`. The **boundary** column shows what Eldr resolved, so you only override what's wrong or unseeable.
 
 ## Partial walls
 
@@ -70,8 +70,8 @@ You scan it, copy the ids of the garage-adjacent walls into the side-car, and ta
 
 1. **sidecar.py** — parse + validate the `walls` map → `SideCar.wall_boundaries: dict[str, str]`.
 2. **geometry.py** — `extract_envelope(home_path, wall_boundaries=None)`: apply the tag→category precedence above; keep the inference fallback and the area-split attribution. (Geometry gains only a small lookup, not a side-car dependency.)
-3. **loads.py** — `buffer_wall` in the ΔT resolvers (`BUFFER_DELTA_FRACTION` × the mode's ΔT) and a `buffer_wall → exterior_wall` U fallback in `_conduction`.
-4. **cli.py** — pass `sc.wall_boundaries` into `extract_envelope`; add the `walls` subcommand (argparse subparsers; the existing `eldr <home> <sidecar>` report path stays).
+3. **loads.py** — `buffer_wall` in the ΔT resolvers (`BUFFER_FACTOR` × the mode's ΔT) and a `buffer_wall → exterior_wall` U fallback in `_conduction`.
+4. **cli.py** — pass `sc.wall_boundaries` into `extract_envelope`; add the `--walls` flag (the existing `eldr <home> <sidecar>` report path stays).
 5. **report.py** — the prominent buffer-factor line when buffer walls are present.
 6. **docs / example-sidecar** — the `walls` block + buffer-factor notes.
 
@@ -80,6 +80,11 @@ You scan it, copy the ids of the garage-adjacent walls into the side-car, and ta
 - Height/area **fractional splits** within one wall (the garage's partial-height overlap).
 - **Per-buffer-space temperatures** (garage vs. vented crawl vs. attic) — one factor for now.
 - **Per-wall U overrides** in the tag (use the category's assembly U for now).
+- **Buffer openings** — a window/door *in* a buffer wall still uses the opening's own
+  ΔT (full outdoor) and, for glazing, solar gain. The opaque `buffer_wall` gets the
+  buffer factor; its openings don't yet inherit it (they'd also need solar suppressed
+  for a window into a garage). The realistic case is the house↔garage door; small-area,
+  and buffer walls are tag-only/rare — so this is a follow-up, not a blocker.
 
 ## Added mid-build: deterministic overview generator
 

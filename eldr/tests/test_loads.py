@@ -195,7 +195,7 @@ def test_below_grade_warm_ground_adds_cooling():
 
 
 def test_buffer_wall_heating_fraction_and_u_fallback():
-    # buffer wall: no buffer_wall U -> falls back to exterior_wall U; ΔT = BUFFER_FACTOR × air
+    # buffer wall: no buffer_wall U -> falls back to exterior_wall U; dT = BUFFER_FACTOR x air
     env = geometry.Envelope(surfaces=[geometry.Surface("buffer_wall", 100.0)], volume_ft3=0.0)
     sc = sidecar.SideCar(
         assemblies={"exterior_wall": 0.1},

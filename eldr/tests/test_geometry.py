@@ -305,6 +305,14 @@ def test_wall_inventory_resolves_boundaries(tmp_path):
     assert tagged["w-int"].boundary == "buffer" and tagged["w-int"].tagged
 
 
+def test_wall_inventory_unknown_id_warns(tmp_path):
+    # the listing (`--walls`) is the mode meant to fix tags, so it must flag stale ids
+    p = tmp_path / "Home.xml"
+    p.write_text(ROOM_FIXTURE)
+    with pytest.warns(UserWarning, match="unknown wall ids"):
+        geometry.wall_inventory(str(p), {"wall-nope": "buffer"})
+
+
 def test_no_rooms_leaves_rooms_empty(tmp_path):
     # the original single-box fixture has no <room> -> rooms is empty (backward compatible)
     p = tmp_path / "Home.xml"
