@@ -33,3 +33,9 @@ ducts:                        # optional — enables Manual D duct sizing
   #                                    # rate runs high. Turn on once you have real equivalent lengths.
   # runs:                     # optional hand-listed fallback — used only if the model has no rooms
   #   - {name: main trunk, cfm: 720}
+# walls:                        # optional — explicit per-wall boundary overrides (SH3D wall id).
+#                               # Untagged walls are inferred; run `--walls` to list ids + boundaries.
+#   wall-<id>: {boundary: buffer}     # garage/crawl-adjacent — loaded at BUFFER_FACTOR (50%) of ΔT
+#   wall-<id>: {boundary: exterior}   # force onto the envelope (fix a mis-inferred wall)
+#   wall-<id>: {boundary: interior}   # force off the envelope
+#   # boundary ∈ {exterior, ground, buffer, interior}. `buffer` can ONLY be set here.

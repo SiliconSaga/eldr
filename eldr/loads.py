@@ -23,6 +23,16 @@ COOLING_SUPPLY_DT_F = 20.0              # supply-air below room, for cooling CFM
 # air ΔT (a basement wall against 50°F soil loses far less than one against 15°F air).
 GROUND_COUPLED_CATEGORIES = frozenset({"basement_wall", "floor"})
 
+# ============================ BUFFER WALLS ============================
+# A `buffer_wall` faces a semi-conditioned buffer space (an attached garage, a vented
+# crawlspace) rather than the outdoors. It's neither exterior nor interior: the buffer
+# floats between indoor and outdoor, so the wall sees only a FRACTION of the design ΔT.
+# BUFFER_FACTOR is that fraction (0.5 ≈ the buffer sits midway). Demo-grade, one factor
+# for all buffers. A `buffer_wall` with no assembly U falls back to `exterior_wall`.
+BUFFER_WALL_CATEGORY = "buffer_wall"
+BUFFER_FACTOR = 0.5
+# =====================================================================
+
 
 @dataclass(frozen=True)
 class HeatingResult:
@@ -62,27 +72,40 @@ def _conduction(surfaces, assemblies, dt_for):
     by_category: dict[str, float] = {}
     total = 0.0
     for s in surfaces:
-        if s.category not in assemblies:
-            raise KeyError(f"no assembly U-value for category '{s.category}' in side-car")
-        q = assemblies[s.category] * s.area_ft2 * dt_for(s.category)
+        u = _u_value(s.category, assemblies)
+        q = u * s.area_ft2 * dt_for(s.category)
         by_category[s.category] = by_category.get(s.category, 0.0) + q
         total += q
     return total, by_category
 
 
+def _u_value(category, assemblies):
+    """U-value for a surface category; a `buffer_wall` falls back to `exterior_wall`."""
+    if category in assemblies:
+        return assemblies[category]
+    if category == BUFFER_WALL_CATEGORY and "exterior_wall" in assemblies:
+        return assemblies["exterior_wall"]
+    raise KeyError(f"no assembly U-value for category '{category}' in side-car")
+
+
 def _heating_dt_for(design) -> Callable[[str], float]:
-    """ΔT resolver for heating: ground ΔT below grade, outdoor-air ΔT elsewhere."""
+    """ΔT resolver for heating: ground ΔT below grade, buffer fraction for buffer walls,
+    outdoor-air ΔT elsewhere."""
     air, ground = design.heating_delta_t, design.ground_heating_delta_t
-    return lambda cat: ground if cat in GROUND_COUPLED_CATEGORIES else air
+    buffer = BUFFER_FACTOR * air
+    return lambda cat: (ground if cat in GROUND_COUPLED_CATEGORIES
+                        else buffer if cat == BUFFER_WALL_CATEGORY else air)
 
 
 def _cooling_dt_for(design, cooling) -> Callable[[str], float]:
     """ΔT resolver for cooling: outdoor-air ΔT above grade; below grade the surface
-    sees the soil, so its ΔT is (ground - indoor), clamped at 0. Normally the soil is
-    cooler than the setpoint (a sink -> 0); a warmer configured ground adds real gain."""
+    sees the soil, so its ΔT is (ground - indoor), clamped at 0 (a sink); a buffer wall
+    sees a fraction of the outdoor ΔT."""
     air = cooling.cooling_delta_t
     ground = max(0.0, design.ground_temp_f - cooling.indoor_f)
-    return lambda cat: ground if cat in GROUND_COUPLED_CATEGORIES else air
+    buffer = BUFFER_FACTOR * air
+    return lambda cat: (ground if cat in GROUND_COUPLED_CATEGORIES
+                        else buffer if cat == BUFFER_WALL_CATEGORY else air)
 
 
 def heating_load(env: geometry.Envelope, sc: sidecar.SideCar) -> HeatingResult:

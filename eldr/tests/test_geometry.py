@@ -253,6 +253,74 @@ def test_unconditioned_room_walls_excluded_from_envelope(tmp_path):
     assert whole > 0 and abs(whole - cond) < 1e-6
 
 
+def test_wall_tag_buffer_forces_into_envelope(tmp_path):
+    # the interior partition, tagged `buffer`, is pulled into the envelope as buffer_wall
+    from eldr import units
+    p = tmp_path / "Home.xml"
+    p.write_text(ROOM_FIXTURE)
+    assert "buffer_wall" not in _by_cat(geometry.extract_envelope(str(p)))
+    tagged = _by_cat(geometry.extract_envelope(str(p), {"w-int": "buffer"}))
+    assert abs(tagged["buffer_wall"] - units.sqcm_to_sqft(500 * 300)) < 1e-6
+
+
+def test_wall_tag_interior_excludes(tmp_path):
+    # tagging an exterior wall `interior` drops it from the envelope
+    from eldr import units
+    p = tmp_path / "Home.xml"
+    p.write_text(ROOM_FIXTURE)
+    base = _by_cat(geometry.extract_envelope(str(p)))
+    tagged = _by_cat(geometry.extract_envelope(str(p), {"w-n": "interior"}))
+    assert abs((base["exterior_wall"] - tagged["exterior_wall"])
+               - units.sqcm_to_sqft(1000 * 300)) < 1e-6
+
+
+def test_wall_tag_exterior_forces_include(tmp_path):
+    # tagging the interior partition `exterior` forces it into exterior_wall
+    from eldr import units
+    p = tmp_path / "Home.xml"
+    p.write_text(ROOM_FIXTURE)
+    base = _by_cat(geometry.extract_envelope(str(p)))
+    tagged = _by_cat(geometry.extract_envelope(str(p), {"w-int": "exterior"}))
+    assert abs((tagged["exterior_wall"] - base["exterior_wall"])
+               - units.sqcm_to_sqft(500 * 300)) < 1e-6
+
+
+def test_wall_tag_unknown_id_warns(tmp_path):
+    p = tmp_path / "Home.xml"
+    p.write_text(ROOM_FIXTURE)
+    with pytest.warns(UserWarning, match="unknown wall ids"):
+        geometry.extract_envelope(str(p), {"wall-nope": "buffer"})
+
+
+def test_wall_inventory_resolves_boundaries(tmp_path):
+    p = tmp_path / "Home.xml"
+    p.write_text(ROOM_FIXTURE)
+    inv = {w.id: w for w in geometry.wall_inventory(str(p))}
+    assert inv["w-int"].boundary == "interior"    # partition between West and East
+    assert inv["w-n"].boundary == "exterior"      # perimeter, conditioned one side
+    assert inv["g-n"].boundary == "interior"      # garage wall — unconditioned, not envelope
+    assert not inv["w-n"].tagged
+    # an explicit tag shows through, flagged as tagged
+    tagged = {w.id: w for w in geometry.wall_inventory(str(p), {"w-int": "buffer"})}
+    assert tagged["w-int"].boundary == "buffer" and tagged["w-int"].tagged
+
+
+def test_wall_inventory_unknown_id_warns(tmp_path):
+    # the listing (`--walls`) is the mode meant to fix tags, so it must flag stale ids
+    p = tmp_path / "Home.xml"
+    p.write_text(ROOM_FIXTURE)
+    with pytest.warns(UserWarning, match="unknown wall ids"):
+        geometry.wall_inventory(str(p), {"wall-nope": "buffer"})
+
+
+def test_invalid_boundary_value_raises_valueerror(tmp_path):
+    # a programmatic caller passing a bad boundary gets a schema error, not a KeyError
+    p = tmp_path / "Home.xml"
+    p.write_text(ROOM_FIXTURE)
+    with pytest.raises(ValueError, match="invalid wall boundary"):
+        geometry.extract_envelope(str(p), {"w-int": "garage"})
+
+
 def test_no_rooms_leaves_rooms_empty(tmp_path):
     # the original single-box fixture has no <room> -> rooms is empty (backward compatible)
     p = tmp_path / "Home.xml"

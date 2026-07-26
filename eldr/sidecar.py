@@ -1,6 +1,6 @@
 """The thermal layer SH3D can't hold: assemblies, design conditions, infiltration."""
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
 import yaml
 from eldr import ductd
@@ -8,6 +8,10 @@ from eldr import ductd
 # Deep soil temperature (°F) a below-grade surface is coupled to when the side-car
 # doesn't specify one. Roughly the annual-mean air temp for a temperate US climate.
 DEFAULT_GROUND_TEMP_F = 50.0
+
+# Explicit per-wall boundary conditions the side-car may assign (by SH3D wall id).
+# `buffer` (garage/crawl-adjacent) can only come from a tag — geometry can't infer it.
+WALL_BOUNDARIES = frozenset({"exterior", "ground", "buffer", "interior"})
 
 
 @dataclass(frozen=True)
@@ -72,6 +76,9 @@ class SideCar:
     existing_tons: float | None = None   # current equipment nominal tonnage (Manual S check)
     cooling: Cooling | None = None       # optional cooling design conditions (Manual J 1b)
     ducts: Ducts | None = None           # optional duct runs for Manual D sizing
+    # explicit per-wall boundary overrides: SH3D wall id -> one of WALL_BOUNDARIES.
+    # Untagged walls fall back to geometric inference.
+    wall_boundaries: dict[str, str] = field(default_factory=dict)
 
 
 def _require(d: dict, key: str, ctx: str):
@@ -152,6 +159,21 @@ def load_sidecar(path: str) -> SideCar:
                 ducts_raw, "available_static_pressure", "ducts"),
             fitting_factor=1.5 if ff is None else _require_number(ducts_raw, "fitting_factor", "ducts"),
         )
+    walls_raw = raw.get("walls")
+    if walls_raw is not None and not isinstance(walls_raw, dict):
+        raise ValueError("walls must be a mapping of wall-id -> {boundary: ...}")
+    wall_boundaries: dict[str, str] = {}
+    if walls_raw is not None:
+        for wid, spec in walls_raw.items():
+            if not isinstance(spec, dict):
+                raise ValueError(f"walls['{wid}'] must be a mapping with a 'boundary' key")
+            boundary = _require(spec, "boundary", f"walls['{wid}']")
+            # isinstance guard first: an unhashable list/mapping would make the set
+            # membership raise TypeError instead of our clean schema error.
+            if not isinstance(boundary, str) or boundary not in WALL_BOUNDARIES:
+                raise ValueError(f"walls['{wid}'].boundary must be one of "
+                                 f"{sorted(WALL_BOUNDARIES)} (got {boundary!r})")
+            wall_boundaries[str(wid)] = boundary
     sc = SideCar(
         assemblies={k: float(v) for k, v in _require(raw, "assemblies", "root").items()},
         design=DesignConditions(
@@ -165,6 +187,7 @@ def load_sidecar(path: str) -> SideCar:
         existing_tons=None if existing_tons is None else float(existing_tons),
         cooling=cooling,
         ducts=ducts,
+        wall_boundaries=wall_boundaries,
     )
     _validate(sc)
     return sc

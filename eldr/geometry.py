@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import math
 import os
+import warnings
 import zipfile
 from xml.etree.ElementTree import Element
 import defusedxml.ElementTree as DET
@@ -16,6 +17,21 @@ from eldr import units
 # Cap the parsed Home.xml — a .sh3d/Home.xml can be third-party input, so bound it
 # (with defusedxml) against zip-bomb / billion-laughs style attacks.
 MAX_HOME_XML_BYTES = 64 * 1024 * 1024
+
+# An explicit per-wall boundary tag (side-car) maps to a surface category; `interior`
+# excludes the wall from the envelope. `buffer` can only arrive via a tag.
+_BOUNDARY_TO_CATEGORY = {"exterior": "exterior_wall", "ground": "basement_wall",
+                         "buffer": "buffer_wall"}
+_VALID_BOUNDARIES = frozenset(_BOUNDARY_TO_CATEGORY) | {"interior"}
+
+
+def _check_boundaries(wall_boundaries):
+    """Fail with a clear ValueError if any tag value isn't a known boundary — so a
+    programmatic caller gets a schema error, not a downstream KeyError."""
+    bad = sorted({v for v in wall_boundaries.values() if v not in _VALID_BOUNDARIES})
+    if bad:
+        raise ValueError(f"invalid wall boundary value(s) {bad}; "
+                         f"expected one of {sorted(_VALID_BOUNDARIES)}")
 
 
 def _read_home_root(path: str) -> Element:
@@ -190,6 +206,24 @@ def _conditioned_room_on_sides(w, rooms):
     return left_in, right_in
 
 
+def _resolve_boundary(w, tag, rooms_here, is_basement, extent):
+    """The wall's boundary — an explicit tag wins; else it's inferred from room
+    adjacency (a conditioned room on exactly one side), or the level bounding-box edge
+    when the level has no rooms. Returns one of exterior / ground / buffer / interior.
+    """
+    if tag is not None:
+        return tag
+    grade = "ground" if is_basement else "exterior"
+    if rooms_here:
+        left, right = _conditioned_room_on_sides(w, rooms_here)
+        return grade if left != right else "interior"
+    minx, maxx, miny, maxy = extent
+    mx, my = _wall_midpoint(w)
+    on_edge = (abs(mx - minx) < 1.0 or abs(mx - maxx) < 1.0
+               or abs(my - miny) < 1.0 or abs(my - maxy) < 1.0)
+    return grade if on_edge else "interior"
+
+
 def _wall_midpoint(w):
     return ((_f(w, "xStart") + _f(w, "xEnd")) / 2.0,
             (_f(w, "yStart") + _f(w, "yEnd")) / 2.0)
@@ -284,8 +318,15 @@ def _parse_rooms(root, levels):
     return by_level
 
 
-def extract_envelope(home_path: str) -> Envelope:
-    """Parse an exploded Home.xml or a packed .sh3d into a single-zone Envelope."""
+def extract_envelope(home_path: str, wall_boundaries: dict[str, str] | None = None) -> Envelope:
+    """Parse an exploded Home.xml or a packed .sh3d into a single-zone Envelope.
+
+    `wall_boundaries` optionally maps SH3D wall id -> an explicit boundary
+    (`exterior` / `ground` / `buffer` / `interior`) that overrides the geometric
+    inference for that wall; untagged walls are inferred as before.
+    """
+    wall_boundaries = wall_boundaries or {}
+    _check_boundaries(wall_boundaries)
     root = _read_home_root(home_path)
 
     compass = root.find("compass")
@@ -307,6 +348,10 @@ def extract_envelope(home_path: str) -> Envelope:
     for w in root.findall("wall"):
         walls_by_level.setdefault(w.get("level"), []).append(w)
     wall_by_id = {w.get("id"): w for ws in walls_by_level.values() for w in ws}
+    unknown = set(wall_boundaries) - set(wall_by_id)
+    if unknown:
+        warnings.warn(f"side-car `walls` reference unknown wall ids (redrawn or typo'd?): "
+                      f"{sorted(unknown)}", stacklevel=2)
 
     rooms_by_level = _parse_rooms(root, levels)
     room_by_id = {rm["id"]: rm for lst in rooms_by_level.values() for rm in lst}
@@ -332,23 +377,19 @@ def extract_envelope(home_path: str) -> Envelope:
         is_basement = (lv.get("name") or "").lower().startswith("basement")
         rooms_here = rooms_by_level.get(level_id, [])
         conditioned_here = [r for r in rooms_here if r["conditioned"]]
+        extent = (minx, maxx, miny, maxy)
         for w in walls:
-            # A wall is on the thermal envelope if a *conditioned* room sits on exactly
-            # one side of it (conditioned inside, outdoors out). Following the room-
-            # polygon outline catches perimeter walls on an extension/wing that sit
-            # inside the level's bounding rectangle, and excludes walls of unconditioned
-            # space (garage/crawlspace) entirely. Levels with no rooms fall back to the
-            # bounding-box edge test.
-            if rooms_here:
-                left_in, right_in = _conditioned_room_on_sides(w, rooms_here)
-                exterior = left_in != right_in
-            else:
-                mx, my = _wall_midpoint(w)
-                exterior = (abs(mx - minx) < 1.0 or abs(mx - maxx) < 1.0
-                            or abs(my - miny) < 1.0 or abs(my - maxy) < 1.0)
-            if not exterior:
+            # An explicit side-car tag wins (interior -> dropped; buffer only comes from
+            # a tag). Untagged walls are inferred: on the envelope if a *conditioned* room
+            # sits on exactly one side, following the room-polygon outline (so an
+            # extension/wing perimeter wall inside the bounding rectangle is caught, and
+            # unconditioned garage/crawlspace walls are excluded). Roomless levels fall
+            # back to the bounding-box edge test.
+            boundary = _resolve_boundary(w, wall_boundaries.get(w.get("id")),
+                                         rooms_here, is_basement, extent)
+            if boundary == "interior":
                 continue
-            cat = "basement_wall" if is_basement else "exterior_wall"
+            cat = _BOUNDARY_TO_CATEGORY[boundary]
             area = _wall_length_cm(w) * _f(w, "height")
             wall_area_cm2[w.get("id")] = area
             wall_category[w.get("id")] = cat
@@ -483,3 +524,53 @@ def extract_envelope(home_path: str) -> Envelope:
                     windows_by_bearing=windows_by_bearing,
                     latitude=latitude, longitude=longitude, rooms=rooms,
                     furniture=furniture, level_elevations=level_elevations)
+
+
+@dataclass(frozen=True)
+class WallInfo:
+    """One wall, for the `eldr walls` discovery listing (id -> boundary tagging)."""
+    id: str
+    level_name: str
+    x0_ft: float
+    y0_ft: float
+    x1_ft: float
+    y1_ft: float
+    length_ft: float
+    boundary: str          # resolved: an explicit tag, else the inferred boundary
+    tagged: bool           # True if the boundary came from a side-car tag
+
+
+def wall_inventory(home_path: str, wall_boundaries: dict[str, str] | None = None) -> list[WallInfo]:
+    """List every wall with its resolved boundary — the source for hand-tagging walls."""
+    wall_boundaries = wall_boundaries or {}
+    _check_boundaries(wall_boundaries)
+    root = _read_home_root(home_path)
+    levels = {lv.get("id"): lv for lv in root.findall("level")}
+    walls_by_level: dict[str, list] = {}
+    for w in root.findall("wall"):
+        walls_by_level.setdefault(w.get("level"), []).append(w)
+    unknown = set(wall_boundaries) - {w.get("id") for ws in walls_by_level.values() for w in ws}
+    if unknown:
+        warnings.warn(f"side-car `walls` reference unknown wall ids (redrawn or typo'd?): "
+                      f"{sorted(unknown)}", stacklevel=2)
+    rooms_by_level = _parse_rooms(root, levels)
+
+    out: list[WallInfo] = []
+    for level_id, walls in walls_by_level.items():
+        xs = [x for w in walls for x in (_f(w, "xStart"), _f(w, "xEnd"))]
+        ys = [y for w in walls for y in (_f(w, "yStart"), _f(w, "yEnd"))]
+        extent = (min(xs), max(xs), min(ys), max(ys))
+        lv = levels.get(level_id)
+        lname = (lv.get("name") if lv is not None else None) or level_id
+        is_basement = bool(lv is not None and (lv.get("name") or "").lower().startswith("basement"))
+        rooms_here = rooms_by_level.get(level_id, [])
+        for w in walls:
+            tag = wall_boundaries.get(w.get("id"))
+            out.append(WallInfo(
+                id=w.get("id"), level_name=lname,
+                x0_ft=units.cm_to_ft(_f(w, "xStart")), y0_ft=units.cm_to_ft(_f(w, "yStart")),
+                x1_ft=units.cm_to_ft(_f(w, "xEnd")), y1_ft=units.cm_to_ft(_f(w, "yEnd")),
+                length_ft=units.cm_to_ft(_wall_length_cm(w)),
+                boundary=_resolve_boundary(w, tag, rooms_here, is_basement, extent),
+                tagged=tag is not None))
+    return out

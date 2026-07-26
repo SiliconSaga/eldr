@@ -259,3 +259,41 @@ def test_load_sidecar_rejects_bad_values(tmp_path):
     # non-finite value (NaN/inf) rejected before the sign checks
     with pytest.raises(ValueError, match="finite"):
         sidecar.load_sidecar(_write(tmp_path, base.format(outdoor=15, rise=".nan", ach=0.5, u=0.09)))
+
+
+def test_walls_block_optional(tmp_path):
+    sc = sidecar.load_sidecar(_write(tmp_path, _VALID))
+    assert sc.wall_boundaries == {}
+
+
+def test_walls_block_parsed(tmp_path):
+    body = _VALID + ("    walls:\n"
+                     "      wall-abc: {boundary: buffer}\n"
+                     "      wall-def: {boundary: exterior}\n")
+    sc = sidecar.load_sidecar(_write(tmp_path, body))
+    assert sc.wall_boundaries == {"wall-abc": "buffer", "wall-def": "exterior"}
+
+
+def test_walls_rejects_bad_boundary(tmp_path):
+    body = _VALID + "    walls:\n      wall-abc: {boundary: garage}\n"
+    with pytest.raises(ValueError, match="boundary"):
+        sidecar.load_sidecar(_write(tmp_path, body))
+
+
+def test_walls_rejects_non_mapping_spec(tmp_path):
+    body = _VALID + "    walls:\n      wall-abc: buffer\n"
+    with pytest.raises(ValueError, match="mapping"):
+        sidecar.load_sidecar(_write(tmp_path, body))
+
+
+def test_walls_rejects_missing_boundary_key(tmp_path):
+    body = _VALID + "    walls:\n      wall-abc: {}\n"
+    with pytest.raises(ValueError, match="boundary"):
+        sidecar.load_sidecar(_write(tmp_path, body))
+
+
+def test_walls_rejects_unhashable_boundary(tmp_path):
+    # an unhashable YAML value (list) must give a clean schema error, not a TypeError
+    body = _VALID + "    walls:\n      wall-abc: {boundary: [a, b]}\n"
+    with pytest.raises(ValueError, match="boundary"):
+        sidecar.load_sidecar(_write(tmp_path, body))

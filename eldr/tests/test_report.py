@@ -41,6 +41,20 @@ def test_render_heating_contains_totals():
     assert "ΔT" in md and "50" in md
 
 
+def test_render_shows_buffer_factor_when_present():
+    r = loads.HeatingResult(conduction_btuh=1000.0, infiltration_btuh=500.0,
+                            total_btuh=1500.0, cfm=30.0,
+                            by_category={"exterior_wall": 700.0, "buffer_wall": 300.0})
+    md = report.render_heating(r, _sc())
+    assert "Buffer walls" in md
+    assert "50%" in md             # BUFFER_FACTOR, prominent
+    assert "buffer_wall" in md
+
+
+def test_render_no_buffer_line_when_absent():
+    assert "Buffer walls" not in report.render_heating(_result(), _sc())
+
+
 def test_render_with_sizing_shows_manual_s():
     r = _result()
     s = sizing.size_equipment(r.total_btuh, _sc(existing_tons=4.0))
