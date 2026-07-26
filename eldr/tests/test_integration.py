@@ -141,3 +141,20 @@ def test_cli_overview_without_sidecar_errors(tmp_path):
     home.write_text(FIXTURE_ROOMS)
     with pytest.raises(SystemExit):
         cli.main([str(home), "--overview"])
+
+
+def test_cli_json_and_overview_mutually_exclusive():
+    with pytest.raises(SystemExit):
+        cli.main(["home.xml", "sc.yaml", "--json", "--overview"])
+
+
+def test_cli_json_prints_valid_json(tmp_path, capsys):
+    import json
+    home = tmp_path / "Home.xml"
+    home.write_text(FIXTURE_ROOMS)
+    sc = tmp_path / "sc.yaml"
+    sc.write_text(SIDECAR)
+    cli.main([str(home), str(sc), "--json"])
+    data = json.loads(capsys.readouterr().out)
+    assert data["heating"]["total_btuh"] > 0
+    assert isinstance(data["rooms"], list)

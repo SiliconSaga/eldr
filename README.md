@@ -37,9 +37,10 @@ Two other output modes:
 ```bash
 .venv/bin/python -m eldr.cli MODEL --walls                 # list walls + boundaries, to hand-tag
 .venv/bin/python -m eldr.cli MODEL SIDECAR --overview      # full narrative "demo overview" doc
+.venv/bin/python -m eldr.cli MODEL SIDECAR --json          # the whole analysis as structured JSON
 ```
 
-`--overview` renders the same numbers as the report, wrapped in a deterministic narrative (ACCA-chain intro, honesty caveats auto-selected from the model, roadmap) — so the demo write-up never drifts from the engine.
+`--overview` renders the same numbers as the report, wrapped in a deterministic narrative (ACCA-chain intro, honesty caveats auto-selected from the model, roadmap) — so the demo write-up never drifts from the engine. `--json` emits the same computation as machine-readable data (design, loads by category, Manual S, every room, every duct run) — for a UI, a spreadsheet, or grounding an "ask the house" chatbot in exact values. The output modes are mutually exclusive.
 
 ## The side-car
 
