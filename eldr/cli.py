@@ -91,16 +91,19 @@ def main(argv=None):
                                  description="Eldr Manual J — heating + cooling loads + ducts.")
     ap.add_argument("home", help="path to a Sweet Home 3D Home.xml or a packed .sh3d")
     ap.add_argument("sidecar", nargs="?", help="path to the Eldr side-car YAML (required for the report)")
-    ap.add_argument("--walls", action="store_true",
-                    help="list the model's walls + boundaries for hand-tagging, instead of the report")
-    ap.add_argument("--overview", action="store_true",
-                    help="render the full narrative demo overview instead of the terse report")
+    # the output modes are mutually exclusive — you get one document, not a mix.
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--walls", action="store_true",
+                      help="list the model's walls + boundaries for hand-tagging, instead of the report")
+    mode.add_argument("--overview", action="store_true",
+                      help="render the full narrative demo overview instead of the terse report")
     args = ap.parse_args(argv)
     if args.walls:
         print(list_walls(args.home, args.sidecar))
         return
     if args.sidecar is None:
-        ap.error("the report needs a side-car — `eldr <home> <sidecar>` (or use --walls)")
+        ap.error("a side-car is required — `eldr <home> <sidecar>` (for the report or --overview); "
+                 "use --walls to inspect walls without one")
     if args.overview:
         from eldr import overview   # lazy: overview imports cli
         print(overview.render_overview(args.home, args.sidecar))

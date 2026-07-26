@@ -313,6 +313,14 @@ def test_wall_inventory_unknown_id_warns(tmp_path):
         geometry.wall_inventory(str(p), {"wall-nope": "buffer"})
 
 
+def test_invalid_boundary_value_raises_valueerror(tmp_path):
+    # a programmatic caller passing a bad boundary gets a schema error, not a KeyError
+    p = tmp_path / "Home.xml"
+    p.write_text(ROOM_FIXTURE)
+    with pytest.raises(ValueError, match="invalid wall boundary"):
+        geometry.extract_envelope(str(p), {"w-int": "garage"})
+
+
 def test_no_rooms_leaves_rooms_empty(tmp_path):
     # the original single-box fixture has no <room> -> rooms is empty (backward compatible)
     p = tmp_path / "Home.xml"

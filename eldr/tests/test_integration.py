@@ -1,4 +1,5 @@
 import textwrap
+import pytest
 from eldr import cli
 
 FIXTURE = textwrap.dedent("""\
@@ -128,3 +129,15 @@ def test_wall_tag_flows_through_to_report(tmp_path):
     sc.write_text(SIDECAR + "walls:\n  w-int: {boundary: buffer}\n")
     md = cli.run(str(home), str(sc))
     assert "buffer_wall" in md
+
+
+def test_cli_walls_and_overview_mutually_exclusive():
+    with pytest.raises(SystemExit):
+        cli.main(["home.xml", "--walls", "--overview"])
+
+
+def test_cli_overview_without_sidecar_errors(tmp_path):
+    home = tmp_path / "Home.xml"
+    home.write_text(FIXTURE_ROOMS)
+    with pytest.raises(SystemExit):
+        cli.main([str(home), "--overview"])

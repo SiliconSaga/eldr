@@ -6,6 +6,7 @@ house-specific figures are the embedded report body, and the honesty caveats are
 auto-selected from what's actually in the model.
 """
 from __future__ import annotations
+import re
 from eldr import loads, report
 
 _INTRO = """# Eldr — Manual J / S / D from a 3D model
@@ -100,10 +101,12 @@ def render_overview(home_path: str, sidecar_path: str) -> str:
     a = cli.analyze(home_path, sidecar_path)
     body = report.render_heating(a.heating, a.sc, sizing=a.sizing, cooling=a.cooling,
                                  station=a.station, ducts=a.ducts, duct_plan=a.duct_plan)
-    # Demote the report's own H1 so the whole overview nests under one title; its other
-    # sections are already ## and sit consistently beneath it.
-    body = body.replace("# Eldr — Heating Load (Phase 1, whole-house)",
-                        "## Your house, by the numbers — whole-house loads (Manual J)", 1)
+    # Demote the report's leading H1 so the whole overview nests under one title; its
+    # other sections are already ## and sit consistently beneath it. Match the first
+    # H1 line by shape (not exact text), so a future report-title tweak can't slip a
+    # nested H1 back in.
+    body = re.sub(r"\A# .*", "## Your house, by the numbers — whole-house loads (Manual J)",
+                  body, count=1)
     return "\n\n".join([
         _INTRO,
         _ACCA_CHAIN,

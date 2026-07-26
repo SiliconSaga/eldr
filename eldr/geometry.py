@@ -22,6 +22,16 @@ MAX_HOME_XML_BYTES = 64 * 1024 * 1024
 # excludes the wall from the envelope. `buffer` can only arrive via a tag.
 _BOUNDARY_TO_CATEGORY = {"exterior": "exterior_wall", "ground": "basement_wall",
                          "buffer": "buffer_wall"}
+_VALID_BOUNDARIES = frozenset(_BOUNDARY_TO_CATEGORY) | {"interior"}
+
+
+def _check_boundaries(wall_boundaries):
+    """Fail with a clear ValueError if any tag value isn't a known boundary — so a
+    programmatic caller gets a schema error, not a downstream KeyError."""
+    bad = sorted({v for v in wall_boundaries.values() if v not in _VALID_BOUNDARIES})
+    if bad:
+        raise ValueError(f"invalid wall boundary value(s) {bad}; "
+                         f"expected one of {sorted(_VALID_BOUNDARIES)}")
 
 
 def _read_home_root(path: str) -> Element:
@@ -316,6 +326,7 @@ def extract_envelope(home_path: str, wall_boundaries: dict[str, str] | None = No
     inference for that wall; untagged walls are inferred as before.
     """
     wall_boundaries = wall_boundaries or {}
+    _check_boundaries(wall_boundaries)
     root = _read_home_root(home_path)
 
     compass = root.find("compass")
@@ -532,6 +543,7 @@ class WallInfo:
 def wall_inventory(home_path: str, wall_boundaries: dict[str, str] | None = None) -> list[WallInfo]:
     """List every wall with its resolved boundary — the source for hand-tagging walls."""
     wall_boundaries = wall_boundaries or {}
+    _check_boundaries(wall_boundaries)
     root = _read_home_root(home_path)
     levels = {lv.get("id"): lv for lv in root.findall("level")}
     walls_by_level: dict[str, list] = {}
