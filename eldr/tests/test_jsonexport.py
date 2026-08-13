@@ -1,6 +1,8 @@
 import json
 import textwrap
+import pytest
 from eldr import cli, jsonexport, loads
+from eldr.tests.fixtures import MULTI_LEVEL_FIXTURE, VOID_BELOW_FIXTURE
 
 FIXTURE = textwrap.dedent("""\
 <?xml version='1.0'?>
@@ -47,7 +49,8 @@ def test_json_structure_and_roundtrip(tmp_path):
     text = jsonexport.render_json(cli.analyze(home, sc))
     data = json.loads(text)   # valid JSON
     assert {"design", "station", "infiltration_ach", "heating", "cooling",
-            "equipment_sizing", "rooms", "ducts"} <= data.keys()
+            "equipment_sizing", "rooms", "ducts",
+            "levels", "spaces", "voids", "surfaces"} <= data.keys()
     assert data["design"]["heating_delta_t_f"] == 55       # 70 - 15
     assert data["heating"]["by_category"]["exterior_wall"] > 0
     names = [r["name"] for r in data["rooms"]]
@@ -74,3 +77,103 @@ def test_json_cooling_null_without_block(tmp_path):
     data = jsonexport.analysis_to_dict(cli.analyze(home, sc))
     assert data["cooling"] is None
     assert data["station"] is None         # outdoor temps set -> no station lookup
+
+
+# The multi-level fixture carries a `Basement` level, whose walls are their own category.
+STACK_SIDECAR = SIDECAR.replace("  window: 0.30\n", "  basement_wall: 0.20\n  window: 0.30\n")
+
+# Two spaces with four deliberately unequal factors, none of them 0.5 (the unvented
+# default), 1.0 (the vented shorthand) or a design ΔT:
+#   attic     winter 26°F -> (26-70)/(15-70) = 0.80; summer undeclared -> the engine
+#             substitutes the sol-air attic temp, 90 + 50*0.85 = 132.5°F -> 3.83
+#   crawlspace winter 48°F -> 0.40; summer 84°F -> (84-75)/(90-75) = 0.60
+# So an export that read heating where it meant cooling, resolved the cooling factor from
+# the DECLARED policy (0.50 for the attic), applied the hot-attic substitution to every
+# space, or keyed either dict wrongly, lands on a number no assertion here accepts.
+STACK_SPACES = textwrap.dedent("""\
+spaces:
+  attic:
+    winter_temp_f: 26
+  crawlspace:
+    winter_temp_f: 48
+    summer_temp_f: 84
+""")
+
+
+def _stack_paths(tmp_path, fixture, sidecar_body):
+    home = tmp_path / "Home.xml"
+    home.write_text(fixture)
+    sc = tmp_path / "sc.yaml"
+    sc.write_text(sidecar_body)
+    return str(home), str(sc)
+
+
+def test_json_carries_levels_spaces_voids_and_surfaces(tmp_path):
+    """The horizontal split and the policies behind it, inspectable without re-deriving."""
+    home, sc = _stack_paths(tmp_path, VOID_BELOW_FIXTURE,
+                            STACK_SIDECAR + COOLING + STACK_SPACES)
+    a = cli.analyze(home, sc)
+    payload = json.loads(jsonexport.render_json(a))
+
+    # every level, keyed by name, with the height that level actually used. The three
+    # differ (200 / 300 / 250 cm), so a map that lost its keying can't read correct.
+    assert set(payload["levels"]) == {"Basement", "Garage", "Main"}
+    assert payload["levels"]["Main"]["height_ft"] == pytest.approx(8.2021, abs=1e-3)
+    assert payload["levels"]["Basement"]["height_ft"] == pytest.approx(6.5617, abs=1e-3)
+    assert payload["levels"] == {
+        name: {"height_ft": pytest.approx(h)} for name, h in a.env.level_heights_ft.items()}
+
+    # both spaces a surface faces, and only those
+    assert set(payload["spaces"]) == {"attic", "crawlspace"}
+    assert payload["spaces"]["attic"]["heating_factor"] == pytest.approx(0.80)
+    assert payload["spaces"]["attic"]["cooling_factor"] == pytest.approx(3.8333, abs=1e-4)
+    assert payload["spaces"]["crawlspace"]["heating_factor"] == pytest.approx(0.40)
+    assert payload["spaces"]["crawlspace"]["cooling_factor"] == pytest.approx(0.60)
+
+    # the void, itemized by room exactly as the report warns about it
+    assert payload["voids"] == {"Living room": pytest.approx(a.env.voids["Living room"])}
+    assert payload["voids"]["Living room"] > 60.0
+
+    # the surfaces array, with the space each horizontal faces. Categories compared whole:
+    # `floor` is a substring of `buffer_floor`, and they are different boundaries.
+    assert len(payload["surfaces"]) == len(a.env.surfaces)
+    assert {(s["category"], s["space"]) for s in payload["surfaces"]} == {
+        ("exterior_wall", None), ("basement_wall", None), ("floor", None),
+        ("buffer_floor", "crawlspace"), ("ceiling", "attic")}
+    ceiling = next(s for s in payload["surfaces"] if s["category"] == "ceiling")
+    assert ceiling["area_ft2"] == pytest.approx(
+        sum(s.area_ft2 for s in a.env.surfaces if s.category == "ceiling"))
+
+
+def test_json_attic_cooling_factor_is_the_applied_one_not_the_declared_one(tmp_path):
+    """The single trap in this export. `spaces.policy_for` returns what the side-car
+    DECLARED; for an attic with no `summer_temp_f` that resolves to the unvented 0.5,
+    while `loads.effective_cooling_policy` substitutes the hot-attic temperature the
+    engine actually loaded the ceiling at. Here `cooling.attic_temp_f` pins that at
+    123°F -> (123-75)/(90-75) = 3.2, a number the declared policy cannot produce.
+    """
+    body = (STACK_SIDECAR + COOLING + "  attic_temp_f: 123\n"
+            + "spaces:\n  attic:\n    winter_temp_f: 26\n")
+    home, sc = _stack_paths(tmp_path, MULTI_LEVEL_FIXTURE, body)
+    a = cli.analyze(home, sc)
+    payload = jsonexport.analysis_to_dict(a)
+    assert payload["spaces"]["attic"]["cooling_factor"] == pytest.approx(3.2)
+    # and the winter factor genuinely IS the declared policy's — only summer is substituted
+    assert payload["spaces"]["attic"]["heating_factor"] == pytest.approx(0.80)
+
+
+def test_json_voids_present_but_empty_when_nothing_is_undrawn(tmp_path):
+    """A consumer must be able to tell "no gaps" from "an export predating the key"."""
+    home, sc = _stack_paths(tmp_path, MULTI_LEVEL_FIXTURE, STACK_SIDECAR + COOLING)
+    payload = jsonexport.analysis_to_dict(cli.analyze(home, sc))
+    assert payload["voids"] == {}
+    # Main sits exactly over Basement, so that floor face is interior and emits nothing
+    assert not any(s["category"] == "buffer_floor" for s in payload["surfaces"])
+
+
+def test_json_cooling_factor_is_null_without_a_cooling_block(tmp_path):
+    """A heating-only side-car has no summer to resolve — null, not a fabricated factor."""
+    home, sc = _stack_paths(tmp_path, MULTI_LEVEL_FIXTURE, STACK_SIDECAR + STACK_SPACES)
+    payload = jsonexport.analysis_to_dict(cli.analyze(home, sc))
+    assert payload["spaces"]["attic"]["cooling_factor"] is None
+    assert payload["spaces"]["attic"]["heating_factor"] == pytest.approx(0.80)

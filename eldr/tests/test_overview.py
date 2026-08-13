@@ -136,3 +136,26 @@ def test_overview_omits_the_void_caveat_when_the_model_has_no_gap(tmp_path):
     sc = _write(tmp_path, "sc.yaml", SIDECAR)
     md = overview.render_overview(home, sc)
     assert "drawn beneath" not in md
+
+
+def _honesty(tmp_path, sidecar_body, fixture=VOID_FIXTURE):
+    home = _write(tmp_path, "Home.xml", fixture)
+    sc = _write(tmp_path, "sc.yaml", sidecar_body)
+    return overview.render_overview(home, sc).split("## What's demo-grade today")[1]
+
+
+def test_borrowed_bullet_inflects_both_verbs_for_one_category(tmp_path):
+    """The bullet carries TWO verbs, "has" and "stands in", and only the first was being
+    inflected — so a single borrowed category read "`buffer_floor` has no `assemblies`
+    entry and stand in on ...". Asserting on the leading verb alone would not have caught
+    it, which is how it shipped."""
+    honesty = _honesty(tmp_path, SIDECAR)
+    assert "`buffer_floor` has no `assemblies` entry and stands in on a related" in honesty
+
+
+def test_borrowed_bullet_inflects_both_verbs_for_several_categories(tmp_path):
+    """Tagging a wall `buffer` adds a second borrowed category (`buffer_wall` borrows
+    `exterior_wall`), so the same sentence must go plural in both places at once."""
+    honesty = _honesty(tmp_path, SIDECAR + "walls:\n  m-w: {boundary: buffer}\n")
+    assert "`buffer_floor`, `buffer_wall` have no `assemblies` entry and stand in" in honesty
+    assert "stands in" not in honesty      # "stand in" is not a substring of "stands in"

@@ -74,7 +74,7 @@ def _assumptions_section(env: geometry_mod.Envelope, sc: sidecar.SideCar) -> lis
     modeled over a space nobody drew.
     """
     blocks = (_levels_block(env, sc) + _spaces_block(env, sc)
-              + _borrows_block(env, sc) + _voids_block(env))
+              + _borrows_block(env, sc) + _voids_block(env, sc))
     if not blocks:
         return []
     return ["", "## Assumptions behind these numbers"] + blocks
@@ -243,9 +243,13 @@ def _borrows_block(env: geometry_mod.Envelope, sc: sidecar.SideCar) -> list[str]
 
 # How many void rooms the callout names before it stops listing and starts counting.
 _VOID_TOP_N = 3
+# The category geometry.py gives a floor face over an undrawn space (see
+# `geometry.CATEGORY_FOR_BELOW`'s default) — and therefore the row of the borrow table
+# this block's area is already part of.
+_VOID_CATEGORY = "buffer_floor"
 
 
-def _voids_block(env: geometry_mod.Envelope) -> list[str]:
+def _voids_block(env: geometry_mod.Envelope, sc: sidecar.SideCar) -> list[str]:
     """Conditioned floor with nothing drawn beneath it — a schematic gap, not a result."""
     if not env.voids:
         return []
@@ -253,12 +257,12 @@ def _voids_block(env: geometry_mod.Envelope) -> list[str]:
     shown = ranked[:_VOID_TOP_N]
     largest = ", ".join(f"{name} {area:,.1f} ft²" for name, area in shown)
     of_n = f" ({len(shown)} of {len(ranked)} rooms)" if len(ranked) > len(shown) else ""
-    return [
+    lines = [
         "",
         "### Schematic gaps",
         "",
         f"⚠ **{sum(env.voids.values()):,.1f} ft² of conditioned floor has no level drawn "
-        f"beneath it** — modeled as buffer floor over the undrawn space below "
+        f"beneath it** — modeled as `{_VOID_CATEGORY}` over the undrawn space below "
         f"(`crawlspace`, unless a level's `below_void` names another).",
         "",
         # Bullets, not indented continuation lines: two-space indents are Markdown lazy
@@ -266,6 +270,18 @@ def _voids_block(env: geometry_mod.Envelope) -> list[str]:
         f"- Largest{of_n}: {largest}.",
         "- Draw those spaces in Sweet Home 3D to replace the assumption with geometry.",
     ]
+    # This block and the borrow table above describe the SAME floor — a void becomes a
+    # `buffer_floor`, whose U-value is then borrowed. Laid out as two adjacent blocks
+    # quoting two different areas with no relation stated, the natural reading is two
+    # separate problems that sum; in fact the smaller nests inside the larger. Say so.
+    borrowed_area = sum(s.area_ft2 for s in env.surfaces if s.category == _VOID_CATEGORY)
+    if borrowed_area > 0 and loads.assembly_borrow(_VOID_CATEGORY, sc.assemblies) is not None:
+        lines.append(
+            f"- Not a separate problem from the one above: this area is *part of* the "
+            f"{borrowed_area:,.1f} ft² on the `{_VOID_CATEGORY}` row of *Borrowed assembly "
+            f"U-values* (which also covers drawn buffer floors), so the two figures nest "
+            f"rather than add.")
+    return lines
 
 
 def _per_room_section(plan: ductmodel_mod.DuctPlan, whole_house_cfm: float) -> list[str]:

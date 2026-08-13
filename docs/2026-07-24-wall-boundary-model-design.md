@@ -16,10 +16,12 @@ Each wall may carry one boundary. Mapping to the existing ΔT/U machinery:
 |---|---|---|---|
 | `exterior` | outdoor ΔT | outdoor ΔT | `exterior_wall` |
 | `ground` | ground ΔT (soil) | max(0, ground − indoor) — 0 unless soil is warmer than setpoint | `basement_wall` |
-| `buffer` | **BUFFER_FACTOR × outdoor ΔT** | **BUFFER_FACTOR × cooling ΔT** | `buffer_wall` → falls back to `exterior_wall` U if unset |
+| `buffer` | **BUFFER_FACTOR × outdoor ΔT** | **BUFFER_FACTOR × cooling ΔT** | `buffer_wall` → borrows `exterior_wall`'s U if unset, with a warning (see below) |
 | `interior` | — (excluded from envelope) | — | — |
 
 Inference (untagged walls) can only ever yield `exterior`, `ground`, or excluded. **`buffer` comes only from an explicit tag.**
+
+**Amended by the level-stack cut (2026-08-13):** the U-value fallback is no longer a plain convenience. Every borrow now *announces itself* — a runtime warning naming both categories and how far off that particular pairing can be, plus a *Borrowed assembly U-values* block in the report listing the recipient, the area involved, the U used and the donor. The chain also grew: `buffer_floor → exposed_floor → floor` and `exposed_floor → floor` joined `buffer_wall → exterior_wall`. The reason is that `floor` in a typical side-car is a slab's *effective whole-area* U (the real loss is perimeter-edge, so the number is deliberately tiny) while the borrowers are genuine framed assemblies — an order of magnitude apart. A borrow turns a loud failure into a confident wrong number, so the disclosure is what keeps it usable. `buffer_wall → exterior_wall` stays the mild case (same construction, different boundary) and the warning says so rather than crying wolf.
 
 ## Precedence: tag first, inference fallback
 
@@ -70,7 +72,7 @@ You scan it, copy the ids of the garage-adjacent walls into the side-car, and ta
 
 1. **sidecar.py** — parse + validate the `walls` map → `SideCar.wall_boundaries: dict[str, str]`.
 2. **geometry.py** — `extract_envelope(home_path, wall_boundaries=None)`: apply the tag→category precedence above; keep the inference fallback and the area-split attribution. (Geometry gains only a small lookup, not a side-car dependency.)
-3. **loads.py** — `buffer_wall` in the ΔT resolvers (`BUFFER_FACTOR` × the mode's ΔT) and a `buffer_wall → exterior_wall` U fallback in `_conduction`.
+3. **loads.py** — `buffer_wall` in the ΔT resolvers (`BUFFER_FACTOR` × the mode's ΔT) and a `buffer_wall → exterior_wall` U fallback in `_conduction`. (Since the level-stack cut this fallback is a *disclosed borrow*, resolved once in `loads.assembly_borrow` and shared by the warning and the report block — see the amendment above.)
 4. **cli.py** — pass `sc.wall_boundaries` into `extract_envelope`; add the `--walls` flag (the existing `eldr <home> <sidecar>` report path stays).
 5. **report.py** — the prominent buffer-factor line when buffer walls are present.
 6. **docs / example-sidecar** — the `walls` block + buffer-factor notes.
@@ -78,7 +80,7 @@ You scan it, copy the ids of the garage-adjacent walls into the side-car, and ta
 ## Scope / deferred
 
 - Height/area **fractional splits** within one wall (the garage's partial-height overlap).
-- **Per-buffer-space temperatures** (garage vs. vented crawl vs. attic) — one factor for now.
+- ~~**Per-buffer-space temperatures** (garage vs. vented crawl vs. attic) — one factor for now.~~ **Delivered** by the level-stack cut: `spaces.py` and the side-car `spaces:` block. Horizontal surfaces carry the space they face and get its own policy; a tagged `buffer_wall` still carries no space name and keeps the flat `BUFFER_FACTOR`.
 - **Per-wall U overrides** in the tag (use the category's assembly U for now).
 - **Buffer openings** — a window/door *in* a buffer wall still uses the opening's own
   ΔT (full outdoor) and, for glazing, solar gain. The opaque `buffer_wall` gets the

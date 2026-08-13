@@ -87,10 +87,14 @@ def _honesty(a) -> str:
     borrowed = sorted({s.category for s in a.env.surfaces
                        if loads.assembly_borrow(s.category, a.sc.assemblies) is not None})
     if borrowed:
-        verb = "has" if len(borrowed) == 1 else "have"
+        # BOTH verbs agree, not just the first. The bullet has two of them ("has ... and
+        # stands in"), and inflecting only the leading one shipped "`buffer_floor` has no
+        # `assemblies` entry and stand in on ...". It survived because the report that was
+        # supposed to expose it pasted the corrected "stands in" instead of the output.
+        has, stands = ("has", "stands") if len(borrowed) == 1 else ("have", "stand")
         bullets.append("**Some U-values are borrowed, not declared** — "
                        + ", ".join(f"`{c}`" for c in borrowed)
-                       + f" {verb} no `assemblies` entry and stand in on a related "
+                       + f" {has} no `assemblies` entry and {stands} in on a related "
                        "assembly's number; the *Borrowed assembly U-values* table above "
                        "names each donor and how far off it can be.")
     if a.env.level_heights_ft:
@@ -105,8 +109,10 @@ def _honesty(a) -> str:
                        "the *Buffer spaces* table above prints the factor and temperature "
                        "each surface actually got.")
     if a.env.voids:
+        # `buffer_floor` in code font, matching the borrow bullet above it, so a reader
+        # can see the two caveats are about the same floor rather than two floors.
         bullets.append(f"**{sum(a.env.voids.values()):,.1f} ft² of conditioned floor has no "
-                       "level drawn beneath it** — modeled as buffer floor over undrawn "
+                       "level drawn beneath it** — modeled as `buffer_floor` over undrawn "
                        "space. That is a gap in the drawing, not a measurement; draw those "
                        "spaces and the assumption is replaced by geometry.")
     if a.duct_plan is not None and a.duct_plan.unit is None:

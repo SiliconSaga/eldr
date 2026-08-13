@@ -224,6 +224,44 @@ def test_report_omits_the_void_warning_when_there_are_none():
     assert "no level drawn beneath" not in md
 
 
+def _sc_slab(**assemblies):
+    """A side-car whose only floor assembly is the slab `floor`, so `buffer_floor` borrows."""
+    return sidecar.SideCar(
+        assemblies={"exterior_wall": 0.1, "floor": 0.02, **assemblies},
+        design=sidecar.DesignConditions(70, 20, 50), infiltration_ach=0.5)
+
+
+def _void_and_borrow_env():
+    """A void of 149.5 ft² inside 293.5 ft² of buffer floor — the Refrhus shape, where the
+    other 144.0 ft² is crawl floor that IS drawn. Deliberately unequal so a cross-reference
+    quoting the void total instead of the borrowed total is visible."""
+    return _env(voids={"Main Bed": 149.5},
+                surfaces=[geometry.Surface("buffer_floor", 149.5, "crawlspace"),
+                          geometry.Surface("buffer_floor", 144.0, "crawlspace")])
+
+
+def test_report_says_the_void_area_is_inside_the_borrowed_area_not_beside_it():
+    """The void warning and the borrow table cover the same floor in adjacent blocks. With
+    no relation stated a reader sums them into one ~443 ft² problem; in fact the void
+    nests inside the borrow. Only the code-font mismatch stopped them being joined."""
+    md = report.render_heating(_result(), _sc_slab(), env=_void_and_borrow_env())
+    callout = next(l for l in md.splitlines() if l.startswith("- Not a separate problem"))
+    assert "293.5 ft²" in callout          # the BORROWED total, not the 149.5 void total
+    assert "`buffer_floor`" in callout
+    # and the warning names the same category in the same code font, so they join up
+    warning = next(l for l in md.splitlines() if l.startswith("⚠ **"))
+    assert "`buffer_floor`" in warning and "149.5 ft²" in warning
+
+
+def test_report_omits_the_cross_reference_when_the_buffer_floor_u_is_declared():
+    """No borrow table means nothing to point at — the cross-reference would dangle."""
+    md = report.render_heating(_result(), _sc_slab(buffer_floor=0.521),
+                               env=_void_and_borrow_env())
+    assert "### Borrowed assembly U-values" not in md
+    assert "Not a separate problem" not in md
+    assert "no level drawn beneath" in md          # the void warning itself still stands
+
+
 def test_report_echoes_buffer_space_factors():
     sc = sidecar.SideCar(
         assemblies={"exterior_wall": 0.1, "buffer_floor": 0.5},
@@ -269,12 +307,18 @@ def test_report_renders_the_cooling_factor_the_engine_applied_not_the_declared_o
 def test_report_names_each_seasons_delta_t_in_the_column_header():
     """The two ΔTs differ by 3.4x and this block renders BEFORE the cooling section, so
     a bare "× ΔT" sends a reader to the heating ΔT in the header: 3.66 × 55 = 201°F
-    instead of 58.5°F. Each column names its own, and each cell resolves it."""
+    instead of 58.5°F. Each column names its own, and each cell resolves it.
+
+    Per cell, not per line: asserting both ΔT substrings against the whole header is
+    order-blind, so swapping the two header f-strings — the single most likely way this
+    breaks — would still pass, shipping a table whose winter column claims a 16°F ΔT
+    beside a cell resolving 55°F."""
     env = _env(surfaces=[geometry.Surface("ceiling", 100.0, "attic")])
     md = report.render_heating(_result(), _sc_attic(), env=env)
     header = next(l for l in md.splitlines() if l.startswith("| Space |"))
-    assert "of 50°F ΔT" in header            # heating: 70 - 20
-    assert "of 16°F ΔT" in header            # cooling: 91 - 75
+    cells = [c.strip() for c in header.split("|")]
+    assert cells[2] == "Winter factor (of 50°F ΔT)"      # heating: 70 - 20
+    assert cells[4] == "Summer factor (of 16°F ΔT)"      # cooling: 91 - 75
 
 
 def test_report_names_the_attic_temperature_and_calls_the_estimate_an_estimate():

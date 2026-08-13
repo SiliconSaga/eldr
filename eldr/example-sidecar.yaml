@@ -13,7 +13,14 @@ assemblies:                   # U-value, BTU/(hr*ft^2*F), per surface category
   window: 0.30                # double-pane
   door: 0.40
   ceiling: 0.026              # attic floor, well insulated
-  floor: 0.05                 # over unconditioned / slab edge
+  floor: 0.05                 # slab on grade: EFFECTIVE whole-area U (real loss is perimeter-edge)
+  # buffer_wall: 0.09         # wall to a garage/crawlspace; unset -> borrows `exterior_wall`
+  # buffer_floor: 0.521       # framed floor over a crawl/garage, or over an UNDRAWN space.
+  #                             # Unset -> borrows `exposed_floor`, then `floor` — and a slab's
+  #                             # effective U is an order of magnitude off a framed floor's, so
+  #                             # declare this one. Every borrow warns and is named in the report.
+  # exposed_floor: 0.05       # floor over open air (cantilever/overhang). PROVISIONAL: nothing
+  #                             # infers it — reachable only via `levels.<name>.below_void: outdoor`.
 equipment:                    # optional — enables the Manual S existing-unit check
   existing_tons: 4.0          # current unit nominal tonnage (omit to skip the comparison)
 cooling:                      # optional — enables the Manual J 1b cooling load
@@ -21,6 +28,11 @@ cooling:                      # optional — enables the Manual J 1b cooling loa
   # outdoor_1_f:              # omitted -> looked up from lat/long (set to override)
   shgc: 0.35                  # window solar heat gain coefficient (double-pane, low-e-ish)
   occupants: 3                # for internal + latent gains
+  # attic_temp_f: 130         # design-day ATTIC AIR temp. Omitted -> a sol-air estimate,
+  #                             # outdoor_1_f + 50F * 0.85 roof absorptance (133.5F on Refrhus,
+  #                             # i.e. 3.66x the outdoor cooling ΔT). Flat uplift: no roof area,
+  #                             # orientation, ventilation rate or radiant barrier. Set this to an
+  #                             # observed value to replace it. Outranked by spaces.attic.summer_temp_f.
 ducts:                        # optional — enables Manual D duct sizing
   # Runs are derived per-room from the model's rooms (Manual J 1c): one branch per
   # conditioned room + a main trunk. These settings tune that:
@@ -39,3 +51,32 @@ ducts:                        # optional — enables Manual D duct sizing
 #   wall-<id>: {boundary: exterior}   # force onto the envelope (fix a mis-inferred wall)
 #   wall-<id>: {boundary: interior}   # force off the envelope
 #   # boundary ∈ {exterior, ground, buffer, interior}. `buffer` can ONLY be set here.
+# levels:                       # optional — per-level overrides, keyed by the level's SH3D NAME.
+#                               # An unknown name warns (renamed or typo'd). Duplicate names are
+#                               # rejected outright: an entry could not address one unambiguously.
+#   Main:
+#     height_ft: 8.0            # override a storey height SH3D defaulted; the report echoes which
+#                               # levels used a model height and which used an override
+#     below_void: crawlspace    # what an UNDRAWN space beneath this level means (default crawlspace)
+#     above_void: attic         # ...and above it (default attic)
+#   Overhang:
+#     below_void: outdoor       # open air beneath -> `exposed_floor` at the full outdoor ΔT
+#   Garage:
+#     role: unconditioned       # conditioned | unconditioned | ignore. NO `buffer` role — how a
+#                               # space is treated thermally is decided in `spaces:` below.
+#   joist-layer:
+#     role: ignore              # acknowledge a walled, roomless scaffolding level and silence its
+#                               # warning; it is excluded from the conditioned volume either way
+# spaces:                       # optional — temperature policy per buffer space. A surface facing a
+#                               # space sees a FRACTION of the design ΔT; this is what sets it.
+#                               # Precedence: observed temperature > factor > vented > built-in
+#                               # default (attic/crawlspace/garage = unvented 0.5, outdoor = 1.0).
+#   crawlspace:
+#     winter_temp_f: 32         # an OBSERVATION, so it outranks the shorthands below
+#   attic:
+#     vented: false             # WINTER shorthand -> 0.5 (true -> 1.0). Note the built-in default is
+#                               # already false, which diverges from ACCA's vented-attic practice.
+#                               # Summer ignores this: see cooling.attic_temp_f / the sol-air estimate.
+#     # summer_temp_f: 125      # an observed attic air temp; outranks cooling.attic_temp_f
+#   garage:
+#     factor: 0.5               # explicit fraction of the design ΔT, if no temperature was observed
