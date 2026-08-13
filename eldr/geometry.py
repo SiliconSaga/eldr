@@ -109,6 +109,13 @@ class Envelope:
     voids: dict[str, float] = field(default_factory=dict)
     # level name -> the height (ft) actually used, so a wrong SH3D default is visible.
     level_heights_ft: dict[str, float] = field(default_factory=dict)
+    # level name -> the conditioned volume (ft^3) THAT level put into `volume_ft3`, keyed
+    # exactly as `level_heights_ft`. Attributed here rather than re-derived downstream:
+    # the report echoes it beside the height, and a second implementation of the rule
+    # ("conditioned room area x storey height, unless the level is scaffolding, unless the
+    # model is roomless...") is a drift waiting to happen. A level holding no conditioned
+    # rooms contributes 0.0 and says so.
+    level_volumes_ft3: dict[str, float] = field(default_factory=dict)
 
 
 def _f(el, attr):
@@ -449,7 +456,15 @@ def extract_envelope(home_path: str, wall_boundaries: dict[str, str] | None = No
     # Roomless levels (joists, duct chases) are geometry, not conditioned space — they
     # take no part in the stack and must not inject bounding-box volume either.
     scaffolding = stack.scaffolding_ids(infos, rooms_by_level)
+    # A level the side-car explicitly marks `role: ignore` has been ACKNOWLEDGED by the
+    # modeler, so it must not draw the roomless-level warning below. Resolved here, above
+    # the level loop, rather than beside its other consumer (`resolve_faces`, further
+    # down) so the warning can see it: without that, a real walled duct chase warned on
+    # every run and the only way to silence it was to delete its walls.
+    ignore_ids = frozenset(l.id for l in infos
+                           if (_spec(l.id) is not None and _spec(l.id).role == "ignore"))
     level_heights_ft = {l.name or l.id: units.cm_to_ft(l.height_cm) for l in infos}
+    level_volumes_ft3 = {l.name or l.id: 0.0 for l in infos}
     room_by_id = {rm["id"]: rm for lst in rooms_by_level.values() for rm in lst}
     room_gross_wall: dict[str, dict[str, float]] = {rid: {} for rid in room_by_id}   # ft^2 by cat
     room_openings: dict[str, float] = {rid: 0.0 for rid in room_by_id}               # ft^2 total
@@ -516,18 +531,29 @@ def extract_envelope(home_path: str, wall_boundaries: dict[str, str] | None = No
             # infiltration term. So warn rather than guess: neither height nor extent
             # separates a chase from a storey reliably, and a wrong guess buried in a
             # number is worse than a loud message the modeler can act on.
-            if units.sqcm_to_sqft((maxx - minx) * (maxy - miny)) >= _SCAFFOLD_WARN_FT2:
+            #
+            # `role: ignore` is the one thing that DOES separate them, because it is the
+            # modeler saying so. It silences the message and nothing else — the exclusion
+            # the message announced still happens.
+            if (level_id not in ignore_ids
+                    and units.sqcm_to_sqft((maxx - minx) * (maxy - miny)) >= _SCAFFOLD_WARN_FT2):
                 warnings.warn(
                     f"level {(lv.get('name') or level_id)!r} has walls but no rooms; it is "
                     f"excluded from the conditioned volume (treated as joists/duct chase). "
-                    f"Draw rooms on it if it is conditioned space.", stacklevel=2)
+                    f"Draw rooms on it if it is conditioned space, or set "
+                    f"`levels.<name>.role: ignore` in the side-car to acknowledge it.",
+                    stacklevel=2)
             continue
         height_ft = units.cm_to_ft(_height_cm(level_id, lv))
         cond_area_ft2 = sum(r["area_ft2"] for r in conditioned_here)
         if cond_area_ft2 > 0:
-            volume_ft3 += cond_area_ft2 * height_ft
+            contributed = cond_area_ft2 * height_ft
         elif not rooms_here:
-            volume_ft3 += units.cm_to_ft(maxx - minx) * units.cm_to_ft(maxy - miny) * height_ft
+            contributed = units.cm_to_ft(maxx - minx) * units.cm_to_ft(maxy - miny) * height_ft
+        else:
+            contributed = 0.0                  # only unconditioned rooms here (garage)
+        volume_ft3 += contributed
+        level_volumes_ft3[lv.get("name") or level_id] = contributed
 
     # An opening belongs to the envelope only if it sits on EXACTLY ONE exterior/
     # basement wall: within half-thickness + tolerance of the segment, projecting
@@ -590,8 +616,6 @@ def extract_envelope(home_path: str, wall_boundaries: dict[str, str] | None = No
     # Resolve every conditioned room's floor and ceiling against the levels around it,
     # so a partial storey leaves the rest of the level below facing the attic and an
     # extension over undrawn crawlspace gets a buffer floor rather than nothing.
-    ignore_ids = frozenset(l.id for l in infos
-                           if (_spec(l.id) is not None and _spec(l.id).role == "ignore"))
     faces = stack.resolve_faces(
         infos, rooms_by_level,
         level_voids={l.id: _voids(l.id) for l in infos},
@@ -675,7 +699,8 @@ def extract_envelope(home_path: str, wall_boundaries: dict[str, str] | None = No
                     windows_by_bearing=windows_by_bearing,
                     latitude=latitude, longitude=longitude, rooms=rooms,
                     furniture=furniture, level_elevations=level_elevations,
-                    voids=voids, level_heights_ft=level_heights_ft)
+                    voids=voids, level_heights_ft=level_heights_ft,
+                    level_volumes_ft3=level_volumes_ft3)
 
 
 @dataclass(frozen=True)

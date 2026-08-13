@@ -37,6 +37,34 @@ cooling:
 """)
 
 
+# Two levels where the upper one overhangs the lower by 600cm — the overhang has nothing
+# drawn beneath it, which is the schematic gap the void warning exists to name. The lower
+# level is NOT called "Basement": that name would turn its walls into `basement_wall`, a
+# category SIDECAR deliberately doesn't carry.
+VOID_FIXTURE = textwrap.dedent("""\
+<?xml version='1.0'?>
+<home version='7400' name='t' wallHeight='300'>
+  <compass x='0' y='0' diameter='100' latitude='0.7105963' longitude='-1.2916551'/>
+  <level id='LL' name='Lower' elevation='0.0' floorThickness='12.0' height='200' elevationIndex='0'/>
+  <level id='LM' name='Main' elevation='212.0' floorThickness='12.0' height='250' elevationIndex='0'/>
+  <wall id='l-n' level='LL' xStart='0' yStart='0' xEnd='400' yEnd='0' height='200' thickness='10'/>
+  <wall id='l-s' level='LL' xStart='0' yStart='300' xEnd='400' yEnd='300' height='200' thickness='10'/>
+  <wall id='l-w' level='LL' xStart='0' yStart='0' xEnd='0' yEnd='300' height='200' thickness='10'/>
+  <wall id='l-e' level='LL' xStart='400' yStart='0' xEnd='400' yEnd='300' height='200' thickness='10'/>
+  <wall id='m-n' level='LM' xStart='0' yStart='0' xEnd='1000' yEnd='0' height='250' thickness='10'/>
+  <wall id='m-s' level='LM' xStart='0' yStart='300' xEnd='1000' yEnd='300' height='250' thickness='10'/>
+  <wall id='m-w' level='LM' xStart='0' yStart='0' xEnd='0' yEnd='300' height='250' thickness='10'/>
+  <wall id='m-e' level='LM' xStart='1000' yStart='0' xEnd='1000' yEnd='300' height='250' thickness='10'/>
+  <room id='rl' level='LL' name='Den'>
+    <point x='0' y='0'/><point x='400' y='0'/><point x='400' y='300'/><point x='0' y='300'/>
+  </room>
+  <room id='rm' level='LM' name='Great Room'>
+    <point x='0' y='0'/><point x='1000' y='0'/><point x='1000' y='300'/><point x='0' y='300'/>
+  </room>
+</home>
+""")
+
+
 def _write(tmp_path, name, body):
     p = tmp_path / name
     p.write_text(body)
@@ -67,3 +95,41 @@ def test_overview_buffer_and_no_extra_unit_note(tmp_path):
     md = overview.render_overview(home, sc)
     assert "Buffer walls" in md and "50%" in md
     assert "No air handler placed" not in md
+
+
+def _row(md, first_cell):
+    line = next(l for l in md.splitlines() if l.startswith(f"| {first_cell} |"))
+    return [c.strip() for c in line.split("|")]
+
+
+def test_overview_mirrors_the_level_and_space_assumptions(tmp_path):
+    """The narrative renders from the same cli.analyze pipeline, so the assumption blocks
+    must arrive with the numbers rather than being re-stated in prose beside them."""
+    home = _write(tmp_path, "Home.xml", FIXTURE)
+    sc = _write(tmp_path, "sc.yaml", SIDECAR)
+    md = overview.render_overview(home, sc)
+    assert "Level heights" in md
+    assert _row(md, "Main")[2] == "9.8 ft"        # 300cm, straight off the SH3D level
+    assert "Buffer spaces" in md
+    # sol-air 132.5°F against the 15°F cooling ΔT -> 3.83, NOT the declared default's 0.50
+    attic = _row(md, "attic")
+    assert attic[2] == "0.50 × ΔT"
+    assert attic[4] == "3.83 × ΔT"
+    assert "132.5" in attic[5] and "sol-air" in attic[5]
+
+
+def test_overview_carries_the_void_warning_into_both_report_and_caveats(tmp_path):
+    home = _write(tmp_path, "Home.xml", VOID_FIXTURE)
+    sc = _write(tmp_path, "sc.yaml", SIDECAR)
+    md = overview.render_overview(home, sc)
+    assert "no level drawn beneath" in md
+    assert "Great Room" in md
+    honesty = md.split("## What's demo-grade today")[1]
+    assert "drawn beneath" in honesty
+
+
+def test_overview_omits_the_void_caveat_when_the_model_has_no_gap(tmp_path):
+    home = _write(tmp_path, "Home.xml", FIXTURE)
+    sc = _write(tmp_path, "sc.yaml", SIDECAR)
+    md = overview.render_overview(home, sc)
+    assert "drawn beneath" not in md

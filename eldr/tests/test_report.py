@@ -1,5 +1,5 @@
 import pytest
-from eldr import report, loads, sidecar, sizing, ductd, ductmodel, geometry
+from eldr import report, loads, sidecar, sizing, ductd, ductmodel, geometry, spaces
 
 
 def _sc(existing_tons=None):
@@ -148,3 +148,150 @@ def test_render_manual_d_with_unit_shows_lengths_and_derivation():
     assert "Length" in md and "Drop" in md
     assert "42 ft" in md
     assert "derived" in md               # friction rate note shows the derivation
+
+
+# ---------------------------------------------------------------- assumptions echoes
+
+def _env(surfaces=(), voids=None, level_heights=None, level_volumes=None):
+    return geometry.Envelope(
+        surfaces=list(surfaces), volume_ft3=10000.0,
+        voids=dict(voids or {}), level_heights_ft=dict(level_heights or {}),
+        level_volumes_ft3=dict(level_volumes or {}))
+
+
+def _sc_attic(attic_temp_f=None, space_policies=None):
+    """A side-car with cooling, so the summer column resolves. ΔT = 91-75 = 16°F."""
+    return sidecar.SideCar(
+        assemblies={"exterior_wall": 0.1, "ceiling": 0.03},
+        design=sidecar.DesignConditions(70, 20, 50),
+        infiltration_ach=0.5,
+        cooling=sidecar.Cooling(indoor_f=75, outdoor_1_f=91, shgc=0.35, occupants=3,
+                                attic_temp_f=attic_temp_f),
+        spaces=dict(space_policies or {}),
+    )
+
+
+def _row(md, first_cell):
+    """The cells of the one Markdown table row whose first cell is `first_cell`.
+
+    Cell-level, not substring: the winter and summer factor columns can legitimately
+    hold the same number, so `"0.50" in md` cannot tell "the report echoed the declared
+    policy" apart from "the report echoed the policy the engine applied".
+    """
+    line = next(l for l in md.splitlines() if l.startswith(f"| {first_cell} |"))
+    return [c.strip() for c in line.split("|")]
+
+
+def test_report_warns_about_void_floor_area_by_room():
+    env = _env(voids={"Main Bed": 120.1, "Kitchen": 12.8})
+    md = report.render_heating(_result(), _sc(), env=env)
+    assert "no level drawn beneath" in md
+    assert "Main Bed" in md and "120.1" in md
+    assert "132.9" in md                      # the total, thousands-separated if needed
+    # ranked by area, biggest first — not model/dict order
+    assert md.index("Main Bed") < md.index("Kitchen")
+
+
+def test_report_omits_the_void_warning_when_there_are_none():
+    md = report.render_heating(_result(), _sc(), env=_env())
+    assert "no level drawn beneath" not in md
+
+
+def test_report_echoes_buffer_space_factors():
+    sc = sidecar.SideCar(
+        assemblies={"exterior_wall": 0.1, "buffer_floor": 0.5},
+        design=sidecar.DesignConditions(70, 13, 50),
+        infiltration_ach=0.5,
+        spaces={"crawlspace": spaces.SpacePolicy("crawlspace", winter_temp_f=32.0)},
+    )
+    env = _env(surfaces=[geometry.Surface("buffer_floor", 100.0, "crawlspace")])
+    md = report.render_heating(_result(), sc, env=env)
+    assert "crawlspace" in md
+    assert "32" in md            # the temperature the factor came from
+    assert "0.67" in md          # (70-32)/(70-13), rounded for display
+    # and it is the WINTER cell that carries them, not some other 0.67 in the document
+    cells = _row(md, "crawlspace")
+    assert cells[2] == "0.67 × ΔT"
+    assert "32°F" in cells[3] and "winter_temp_f" in cells[3]
+
+
+def test_report_echoes_level_heights():
+    env = _env(level_heights={"Main": 8.0})
+    md = report.render_heating(_result(), _sc(), env=env)
+    assert "Main" in md and "8.0" in md
+    assert _row(md, "Main")[2] == "8.0 ft"
+
+
+def test_report_renders_the_cooling_factor_the_engine_applied_not_the_declared_one():
+    """The trap this whole task turns on.
+
+    `spaces.policy_for("attic", {})` is the bare unvented default, whose cooling factor is
+    0.50 — the same number the winter column legitimately shows — while loads.py is
+    meanwhile loading the ceiling at (130-75)/16 = 3.44. A report resolved through
+    `spaces.cooling_factor` alone would be confidently wrong AND would still contain the
+    string "0.50", so only the summer CELL can tell the two implementations apart.
+    """
+    env = _env(surfaces=[geometry.Surface("ceiling", 100.0, "attic")])
+    md = report.render_heating(_result(), _sc_attic(attic_temp_f=130.0), env=env)
+    cells = _row(md, "attic")
+    assert cells[2] == "0.50 × ΔT"          # winter: the declared policy, correctly
+    assert cells[4] == "3.44 × ΔT"          # summer: what loads.py actually applied
+    assert "130" in cells[5] and "attic_temp_f" in cells[5]
+
+
+def test_report_names_the_attic_temperature_and_calls_the_estimate_an_estimate():
+    """133.5°F is the least obvious number in the engine — an outdoor temp plus a flat
+    solar uplift. Printing only the factor would leave it invisible."""
+    env = _env(surfaces=[geometry.Surface("ceiling", 100.0, "attic")])
+    md = report.render_heating(_result(), _sc_attic(), env=env)
+    cells = _row(md, "attic")
+    assert cells[4] == "3.66 × ΔT"          # (133.5-75)/16, the sol-air estimate
+    assert "133.5" in cells[5]
+    assert "sol-air" in cells[5]
+
+
+def test_report_buffer_block_survives_a_heating_only_side_car():
+    """`cooling:` is optional. Unguarded, `effective_cooling_policy` crashed on the attic
+    and only the attic, so this passes on every other space while the report is broken."""
+    env = _env(surfaces=[geometry.Surface("ceiling", 100.0, "attic"),
+                         geometry.Surface("buffer_floor", 100.0, "crawlspace")])
+    md = report.render_heating(_result(), _sc(), env=env)
+    assert _row(md, "attic")[2] == "0.50 × ΔT"
+    assert _row(md, "attic")[4] == "—"
+    assert _row(md, "crawlspace")[4] == "—"
+
+
+def test_report_omits_the_buffer_space_block_when_no_surface_faces_one():
+    env = _env(surfaces=[geometry.Surface("exterior_wall", 100.0)])
+    md = report.render_heating(_result(), _sc(), env=env)
+    assert "Buffer spaces" not in md
+
+
+def test_report_marks_a_side_car_height_override_apart_from_a_model_height():
+    sc = sidecar.SideCar(
+        assemblies={"exterior_wall": 0.1},
+        design=sidecar.DesignConditions(70, 20, 50),
+        infiltration_ach=0.5,
+        levels={"Crawlspace": sidecar.LevelSpec(height_ft=4.0)},
+    )
+    env = _env(level_heights={"Main": 8.0, "Crawlspace": 4.0})
+    md = report.render_heating(_result(), sc, env=env)
+    assert _row(md, "Main")[3] == "model"
+    assert _row(md, "Crawlspace")[3] == "side-car override"
+
+
+def test_report_shows_the_volume_each_level_contributes_not_the_house_total():
+    """A level that holds no conditioned rooms contributes nothing, and saying so is the
+    point of the column. Echoing `volume_ft3` on every row would look plausible."""
+    env = _env(level_heights={"Main": 8.0, "Garage": 10.0},
+               level_volumes={"Main": 3000.0, "Garage": 0.0})
+    md = report.render_heating(_result(), _sc(), env=env)
+    assert _row(md, "Main")[4] == "3,000 ft³"
+    assert _row(md, "Garage")[4] == "0 ft³"
+
+
+def test_report_renders_none_of_the_assumption_blocks_without_an_envelope():
+    md = report.render_heating(_result(), _sc())
+    assert "Level heights" not in md
+    assert "Buffer spaces" not in md
+    assert "no level drawn beneath" not in md

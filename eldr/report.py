@@ -1,6 +1,7 @@
 """Render a HeatingResult (and optional Manual S sizing) as a Markdown report."""
 from __future__ import annotations
-from eldr import (loads, sidecar, sizing as sizing_mod, climate as climate_mod,
+from eldr import (loads, sidecar, spaces as spaces_mod, geometry as geometry_mod,
+                  sizing as sizing_mod, climate as climate_mod,
                   ductd as ductd_mod, ductmodel as ductmodel_mod)
 
 
@@ -9,8 +10,14 @@ def render_heating(result: loads.HeatingResult, sc: sidecar.SideCar,
                    cooling: loads.CoolingResult | None = None,
                    station: climate_mod.Station | None = None,
                    ducts: ductd_mod.DuctResult | None = None,
-                   duct_plan: ductmodel_mod.DuctPlan | None = None) -> str:
-    """Render the heating load (and optional cooling + Manual S sizing) as Markdown."""
+                   duct_plan: ductmodel_mod.DuctPlan | None = None,
+                   env: geometry_mod.Envelope | None = None) -> str:
+    """Render the heating load (and optional cooling + Manual S sizing) as Markdown.
+
+    `env` is optional so every existing call site keeps working; without it the report
+    simply omits the assumption echoes (level heights, buffer-space factors, voids),
+    which live on the Envelope rather than on the computed results.
+    """
     d = sc.design
     if d.outdoor_heating_99_f is None:
         raise ValueError("report requires a resolved design.outdoor_heating_99_f "
@@ -45,6 +52,8 @@ def render_heating(result: loads.HeatingResult, sc: sidecar.SideCar,
         "",
         "_Phase 1 whole-house estimate. Not ACCA-certified. Room-by-room to follow._",
     ]
+    if env is not None:
+        lines += _assumptions_section(env, sc)
     if cooling is not None:
         lines += _cooling_section(cooling, sc)
     if sizing is not None:
@@ -54,6 +63,141 @@ def render_heating(result: loads.HeatingResult, sc: sidecar.SideCar,
     if ducts is not None:
         lines += _duct_section(ducts, duct_plan)
     return "\n".join(lines)
+
+
+def _assumptions_section(env: geometry_mod.Envelope, sc: sidecar.SideCar) -> list[str]:
+    """The assumptions the numbers above are standing on, echoed back.
+
+    Three things the engine decided quietly and the reader cannot otherwise see: the
+    storey height each level was given, the ΔT fraction each buffer space resolved to,
+    and any floor area modeled over a space nobody drew.
+    """
+    blocks = _levels_block(env, sc) + _spaces_block(env, sc) + _voids_block(env)
+    if not blocks:
+        return []
+    return ["", "## Assumptions behind these numbers"] + blocks
+
+
+def _levels_block(env: geometry_mod.Envelope, sc: sidecar.SideCar) -> list[str]:
+    """Per-level storey height, where it came from, and the volume it contributed.
+
+    Storey height is a silent multiplier on the infiltration term, and Sweet Home 3D
+    hands every new level a default one — so a level nobody re-measured looks exactly
+    like a level that was.
+    """
+    if not env.level_heights_ft:
+        return []
+    lines = ["", "### Level heights", "",
+             "| Level | Height used | Source | Conditioned volume |",
+             "|---|---:|---|---:|"]
+    for name, height_ft in env.level_heights_ft.items():
+        spec = sc.levels.get(name)
+        source = ("side-car override" if spec is not None and spec.height_ft is not None
+                  else "model")
+        lines.append(f"| {name} | {height_ft:.1f} ft | {source} | "
+                     f"{env.level_volumes_ft3.get(name, 0.0):,.0f} ft³ |")
+    lines += [
+        "",
+        f"_Total conditioned volume **{env.volume_ft3:,.0f} ft³** — the infiltration "
+        f"basis. A level contributing 0 ft³ holds no conditioned rooms (garage, "
+        f"crawlspace, joist space) and is excluded on purpose. Set "
+        f"`levels.<name>.height_ft` to correct a height Sweet Home 3D defaulted._",
+    ]
+    return lines
+
+
+def _spaces_block(env: geometry_mod.Envelope, sc: sidecar.SideCar) -> list[str]:
+    """Every buffer space a surface faces, with the ΔT fraction the engine gave it.
+
+    The summer column resolves through `loads.effective_cooling_policy`, NOT through
+    `spaces.policy_for` alone. The attic's summer temperature is substituted at load
+    time, so the declared policy is not the applied one: on Refrhus the declaration
+    renders 0.50 while the engine used 3.66.
+    """
+    names = sorted({s.space for s in env.surfaces if s.space is not None})
+    if not names:
+        return []
+    d = sc.design
+    indoor_w = d.indoor_heating_f
+    outdoor_w = indoor_w - d.heating_delta_t
+    c = sc.cooling
+    summer = c is not None and c.outdoor_1_f is not None
+    lines = ["", "### Buffer spaces", "",
+             "| Space | Winter factor | Winter input | Summer factor | Summer input |",
+             "|---|---:|---|---:|---|"]
+    for name in names:
+        policy = spaces_mod.policy_for(name, sc.spaces)
+        origin = ("side-car" if name in sc.spaces
+                  else "built-in default" if name in spaces_mod.DEFAULT_POLICIES
+                  else "no policy declared")
+        winter = spaces_mod.heating_factor(policy, indoor_w, outdoor_w)
+        if summer:
+            effective = loads.effective_cooling_policy(name, policy, c)
+            factor = spaces_mod.cooling_factor(effective, c.indoor_f, c.outdoor_1_f)
+            summer_cell = f"{factor:.2f} × ΔT"
+            summer_input = _summer_input(policy, effective, c, origin)
+        else:
+            summer_cell, summer_input = "—", "no `cooling` block"
+        lines.append(f"| {name} | {winter:.2f} × ΔT | {_winter_input(policy, origin)} "
+                     f"| {summer_cell} | {summer_input} |")
+    lines += [
+        "",
+        "_A surface facing a buffer space sees this fraction of the design ΔT rather than "
+        "all of it. A factor above 1 is not a bug: a sun-heated attic runs hotter than "
+        "outdoor air, so the ceiling beneath it sees a larger ΔT than an exterior wall._",
+    ]
+    return lines
+
+
+def _winter_input(policy: spaces_mod.SpacePolicy, origin: str) -> str:
+    """Which of the precedence rungs the winter factor actually came from."""
+    if policy.winter_temp_f is not None:
+        return f"`winter_temp_f` {policy.winter_temp_f:.0f}°F ({origin})"
+    if policy.factor is not None:
+        return f"`factor` {policy.factor:.2f} ({origin})"
+    if policy.vented is not None:
+        return f"`vented: {str(policy.vented).lower()}` ({origin})"
+    return f"unvented fallback {spaces_mod.UNVENTED_FACTOR:.2f} ({origin})"
+
+
+def _summer_input(policy: spaces_mod.SpacePolicy, effective: spaces_mod.SpacePolicy,
+                  c: sidecar.Cooling, origin: str) -> str:
+    """Same for summer — including the attic temperature the engine substituted.
+
+    That temperature is the least visible number in the whole engine: an outdoor design
+    temp plus a flat solar uplift, appearing nowhere in the side-car. Naming it, and
+    saying whether it was observed or estimated, is most of the point of this block.
+    """
+    if policy.summer_temp_f is not None:
+        return f"`summer_temp_f` {policy.summer_temp_f:.1f}°F ({origin})"
+    if effective.summer_temp_f is not None:          # the hot-attic substitution fired
+        if c.attic_temp_f is not None:
+            return f"`cooling.attic_temp_f` {effective.summer_temp_f:.1f}°F attic air"
+        uplift = spaces_mod.SOL_AIR_UPLIFT_F * spaces_mod.DEFAULT_ROOF_ABSORPTANCE
+        return (f"sol-air estimate {effective.summer_temp_f:.1f}°F attic air "
+                f"(outdoor {c.outdoor_1_f:.0f}°F + {uplift:.1f}°F roof gain) — "
+                f"set `cooling.attic_temp_f` to replace it")
+    if policy.factor is not None:
+        return f"`factor` {policy.factor:.2f} ({origin})"
+    if policy.vented is not None:
+        return f"`vented: {str(policy.vented).lower()}` ({origin})"
+    return f"unvented fallback {spaces_mod.UNVENTED_FACTOR:.2f} ({origin})"
+
+
+def _voids_block(env: geometry_mod.Envelope) -> list[str]:
+    """Conditioned floor with nothing drawn beneath it — a schematic gap, not a result."""
+    if not env.voids:
+        return []
+    ranked = sorted(env.voids.items(), key=lambda kv: kv[1], reverse=True)
+    largest = ", ".join(f"{name} {area:,.1f} sqft" for name, area in ranked)
+    return [
+        "",
+        f"⚠ **{sum(env.voids.values()):,.1f} sqft of conditioned floor has no level drawn "
+        f"beneath it** — modeled as buffer floor over the undrawn space below "
+        f"(`crawlspace`, unless a level's `below_void` names another).",
+        f"  Largest: {largest}.",
+        "  Draw those spaces in Sweet Home 3D to replace the assumption with geometry.",
+    ]
 
 
 def _per_room_section(plan: ductmodel_mod.DuctPlan, whole_house_cfm: float) -> list[str]:

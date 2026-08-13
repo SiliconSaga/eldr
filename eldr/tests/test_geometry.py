@@ -606,3 +606,87 @@ def test_a_lone_wall_on_a_roomless_level_is_too_slight_to_warn(tmp_path):
     with warnings.catch_warnings():
         warnings.simplefilter("error")       # any warning at all fails the test
         geometry.extract_envelope(str(p))
+
+
+def _with_chase(span_cm):
+    """MULTI_LEVEL_FIXTURE plus a roomless level whose two walls span a `span_cm` square."""
+    return MULTI_LEVEL_FIXTURE.replace(
+        "  <room id='rb'",
+        f"  <level id='LT' name='transition' elevation='210.0' floorThickness='2.0'"
+        f" height='30' elevationIndex='0'/>\n"
+        f"  <wall id='t-n' level='LT' xStart='0' yStart='0' xEnd='{span_cm}' yEnd='0'"
+        f" height='30' thickness='10'/>\n"
+        f"  <wall id='t-e' level='LT' xStart='{span_cm}' yStart='0' xEnd='{span_cm}'"
+        f" yEnd='{span_cm}' height='30' thickness='10'/>\n"
+        f"  <room id='rb'")
+
+
+@pytest.mark.parametrize("span_cm, expect_warning", [(95, False), (98, True)],
+                         ids=["just-under-the-noise-floor", "just-over-it"])
+def test_scaffold_warning_threshold_is_pinned_from_both_sides(tmp_path, span_cm,
+                                                              expect_warning):
+    """_SCAFFOLD_WARN_FT2 is 10 ft^2, and until now nothing held it there.
+
+    Its only other test uses a footprint of exactly ZERO area (a single wall), which a
+    threshold of 0.0001 ft^2 would pass just as happily. A 95cm square is 9.71 ft^2 and a
+    98cm square is 10.34 ft^2, so the two cases together bracket the constant: lowering it
+    breaks the first, raising it breaks the second.
+    """
+    p = tmp_path / "Home.xml"
+    p.write_text(_with_chase(span_cm))
+    if expect_warning:
+        with pytest.warns(UserWarning, match="walls but no rooms"):
+            geometry.extract_envelope(str(p))
+    else:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")   # any warning at all fails the test
+            geometry.extract_envelope(str(p))
+
+
+def test_role_ignore_acknowledges_a_roomless_level_and_silences_the_warning(tmp_path):
+    """`role: ignore` is the modeler saying "yes, that really is a duct chase".
+
+    Without this, a level big enough to clear the noise floor warned on every single run
+    and the only way to stop it was to delete the walls — i.e. to damage the model to
+    quiet a message about the model. The level must stay excluded from the volume: the
+    warning goes away, the exclusion it announced does not.
+    """
+    from eldr import sidecar as sc_mod
+    from eldr import units
+    p = tmp_path / "Home.xml"
+    p.write_text(_with_chase(98))                     # over the noise floor -> would warn
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        env = geometry.extract_envelope(
+            str(p), levels={"transition": sc_mod.LevelSpec(role="ignore")})
+    expected = (units.sqcm_to_sqft(400 * 300) * units.cm_to_ft(200)      # basement
+                + units.sqcm_to_sqft(400 * 300) * units.cm_to_ft(250))   # main
+    assert abs(env.volume_ft3 - expected) < 1e-6
+
+
+def test_role_ignore_on_one_level_does_not_silence_another(tmp_path):
+    """The acknowledgement is per level, not a global mute."""
+    from eldr import sidecar as sc_mod
+    p = tmp_path / "Home.xml"
+    p.write_text(_with_chase(98).replace(
+        "  <room id='rm' level='LM' name='Living room'>\n"
+        "    <point x='0' y='0'/><point x='400' y='0'/>"
+        "<point x='400' y='300'/><point x='0' y='300'/>\n"
+        "  </room>\n", ""))
+    with pytest.warns(UserWarning, match=r"'Main' has walls but no rooms"):
+        geometry.extract_envelope(
+            str(p), levels={"transition": sc_mod.LevelSpec(role="ignore")})
+
+
+def test_level_volumes_attribute_the_conditioned_volume_per_level(tmp_path):
+    """The report echoes what each level contributed; the sum must be the whole house."""
+    from eldr import units
+    p = tmp_path / "Home.xml"
+    p.write_text(MULTI_LEVEL_FIXTURE)
+    env = geometry.extract_envelope(str(p))
+    assert env.level_volumes_ft3["Garage"] == 0.0        # unconditioned -> contributes none
+    assert env.level_volumes_ft3["Basement"] == pytest.approx(
+        units.sqcm_to_sqft(400 * 300) * units.cm_to_ft(200))
+    assert env.level_volumes_ft3["Main"] == pytest.approx(
+        units.sqcm_to_sqft(400 * 300) * units.cm_to_ft(250))
+    assert sum(env.level_volumes_ft3.values()) == pytest.approx(env.volume_ft3)

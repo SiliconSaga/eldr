@@ -84,6 +84,22 @@ def _honesty(a) -> str:
         bullets.append(f"**Buffer walls** use a flat {loads.BUFFER_FACTOR:.0%} of the design "
                        "ΔT (one factor for all buffers) and a whole-wall tag — no partial "
                        "height/length split yet.")
+    if a.env.level_heights_ft:
+        bullets.append("**Storey heights are whatever the model says** — Sweet Home 3D gives "
+                       "each level a default height, and a level nobody re-measured looks "
+                       "identical to one that was; the *Level heights* table above shows what "
+                       "each level used and what volume it contributed.")
+    if any(s.space is not None for s in a.env.surfaces):
+        bullets.append("**Buffer-space temperatures are policy, not measurement** — an attic "
+                       "with no observed summer temperature gets a sol-air estimate (outdoor "
+                       "air plus a flat solar uplift, no roof geometry or ventilation rate); "
+                       "the *Buffer spaces* table above prints the factor and temperature "
+                       "each surface actually got.")
+    if a.env.voids:
+        bullets.append(f"**{sum(a.env.voids.values()):,.0f} sqft of conditioned floor has no "
+                       "level drawn beneath it** — modeled as buffer floor over undrawn "
+                       "space. That is a gap in the drawing, not a measurement; draw those "
+                       "spaces and the assumption is replaced by geometry.")
     if a.duct_plan is not None and a.duct_plan.unit is None:
         bullets.append("**No air handler placed** — duct runs have no lengths and the "
                        "friction rate isn't derived; place one named per `ducts.unit_name`.")
@@ -100,7 +116,8 @@ def render_overview(home_path: str, sidecar_path: str) -> str:
     from eldr import cli   # lazy: cli imports overview only inside main()
     a = cli.analyze(home_path, sidecar_path)
     body = report.render_heating(a.heating, a.sc, sizing=a.sizing, cooling=a.cooling,
-                                 station=a.station, ducts=a.ducts, duct_plan=a.duct_plan)
+                                 station=a.station, ducts=a.ducts, duct_plan=a.duct_plan,
+                                 env=a.env)
     # Demote the report's leading H1 so the whole overview nests under one title; its
     # other sections are already ## and sit consistently beneath it. Match the first
     # H1 line by shape (not exact text), so a future report-title tweak can't slip a

@@ -98,5 +98,12 @@ def heating_factor(policy: SpacePolicy, indoor_f: float, outdoor_f: float) -> fl
 
 
 def cooling_factor(policy: SpacePolicy, indoor_f: float, outdoor_f: float) -> float:
-    """Fraction of the cooling design ΔT a surface facing this space sees."""
+    """Fraction of the cooling design ΔT a surface facing this space sees.
+
+    Report / export consumers must pass the policy returned by
+    `loads.effective_cooling_policy`, never a bare `policy_for` result: the attic's summer
+    temperature is substituted at load time, so a *declared* policy rendered straight from
+    here shows a factor the engine never used (0.5 against an applied 3.66, on Refrhus).
+    Named here because someone rendering a cooling factor starts at `spaces`, not `loads`.
+    """
     return _factor(policy, policy.summer_temp_f, indoor_f, outdoor_f)

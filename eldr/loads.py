@@ -160,8 +160,7 @@ ATTIC_SPACE = "attic"
 
 
 def effective_cooling_policy(space: str, policy: spaces.SpacePolicy,
-                             cooling: sidecar.Cooling,
-                             outdoor_f: float) -> spaces.SpacePolicy:
+                             cooling: sidecar.Cooling | None) -> spaces.SpacePolicy:
     """The policy the cooling resolver ACTUALLY applies, with the attic's summer
     temperature filled in.
 
@@ -169,20 +168,33 @@ def effective_cooling_policy(space: str, policy: spaces.SpacePolicy,
     this, not through `spaces.policy_for` alone. `policy_for` returns what the side-car
     *declared*; for the attic that is usually nothing at all, and the bare unvented
     default yields a cooling factor of 0.5 — while the engine is meanwhile loading the
-    ceiling at ~2.9. A report showing the declared policy would be confidently wrong,
-    and its own tests would pass while it was.
+    ceiling at several times the outdoor ΔT (on Refrhus, 3.66). A report showing the
+    declared policy would be confidently wrong, and its own tests would pass while it was.
 
     The substitution is the hot attic: `vented`/`factor` are winter shorthands and both
     cap the attic at or below outdoor air, which is backwards for a sunlit summer day.
     So unless an observed `summer_temp_f` says otherwise, the attic gets a real
     temperature — the side-car's `cooling.attic_temp_f`, else the sol-air estimate.
     Every other space is returned untouched: a crawlspace or garage sees no roof sun.
+
+    The outdoor design temperature is taken from `cooling.outdoor_1_f` rather than passed
+    in beside it. There is only one correct value, so a parameter would be nothing but a
+    second channel for a consumer to diverge on — and it demonstrably was one: handing it
+    the *heating* outdoor temp was silently accepted. A helper whose whole purpose is
+    preventing divergence must not offer a way to diverge.
+
+    `cooling=None` — a heating-only side-car, which the schema explicitly allows — has no
+    summer to resolve, so the policy comes back untouched rather than raising.
     """
-    if space == ATTIC_SPACE and policy.summer_temp_f is None:
-        attic_f = (cooling.attic_temp_f if cooling.attic_temp_f is not None
-                   else spaces.sol_air_attic_temp_f(outdoor_f))
-        return dataclasses.replace(policy, summer_temp_f=attic_f)
-    return policy
+    if cooling is None or space != ATTIC_SPACE or policy.summer_temp_f is not None:
+        return policy
+    if cooling.attic_temp_f is not None:
+        return dataclasses.replace(policy, summer_temp_f=cooling.attic_temp_f)
+    if cooling.outdoor_1_f is None:
+        raise ValueError("the sol-air attic estimate needs a resolved cooling.outdoor_1_f "
+                         "— set it in the side-car or provide the model's lat/long")
+    return dataclasses.replace(
+        policy, summer_temp_f=spaces.sol_air_attic_temp_f(cooling.outdoor_1_f))
 
 
 def _cooling_dt_for(design, cooling, declared_spaces) -> Callable[[geometry.Surface], float]:
@@ -202,7 +214,7 @@ def _cooling_dt_for(design, cooling, declared_spaces) -> Callable[[geometry.Surf
             return ground
         if s.space is not None:
             policy = effective_cooling_policy(
-                s.space, spaces.policy_for(s.space, declared_spaces), cooling, outdoor)
+                s.space, spaces.policy_for(s.space, declared_spaces), cooling)
             return spaces.cooling_factor(policy, indoor, outdoor) * air
         if s.category == BUFFER_WALL_CATEGORY:
             return BUFFER_FACTOR * air

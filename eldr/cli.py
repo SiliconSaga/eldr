@@ -66,7 +66,8 @@ def run(home_path: str, sidecar_path: str) -> str:
     """Run the pipeline and render the Markdown report."""
     a = analyze(home_path, sidecar_path)
     return report.render_heating(a.heating, a.sc, sizing=a.sizing, cooling=a.cooling,
-                                 station=a.station, ducts=a.ducts, duct_plan=a.duct_plan)
+                                 station=a.station, ducts=a.ducts, duct_plan=a.duct_plan,
+                                 env=a.env)
 
 
 def list_walls(home_path: str, sidecar_path: str | None = None) -> str:

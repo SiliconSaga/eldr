@@ -390,7 +390,7 @@ def test_effective_cooling_policy_is_the_shared_resolution_point():
     c = _cooling(outdoor_1_f=95, attic_temp_f=130.0)
     declared = spaces.policy_for("attic", {})
     assert declared.summer_temp_f is None                  # nothing declared to render
-    eff = loads.effective_cooling_policy("attic", declared, c, 95.0)
+    eff = loads.effective_cooling_policy("attic", declared, c)
     assert eff.summer_temp_f == 130.0
     assert eff.name == "attic" and eff.vented is False     # the rest of the policy survives
     # and the factor a report would print now matches what the engine actually applied
@@ -401,13 +401,45 @@ def test_effective_cooling_policy_leaves_other_spaces_alone():
     c = _cooling(outdoor_1_f=95, attic_temp_f=130.0)
     for name in ("crawlspace", "garage", "sub_attic", "attic_2"):
         declared = spaces.policy_for(name, {})
-        assert loads.effective_cooling_policy(name, declared, c, 95.0) is declared
+        assert loads.effective_cooling_policy(name, declared, c) is declared
 
 
 def test_effective_cooling_policy_defers_to_a_declared_summer_temp():
     c = _cooling(outdoor_1_f=95, attic_temp_f=130.0)
     declared = spaces.SpacePolicy("attic", summer_temp_f=105.0)
-    assert loads.effective_cooling_policy("attic", declared, c, 95.0) is declared
+    assert loads.effective_cooling_policy("attic", declared, c) is declared
+
+
+def test_effective_cooling_policy_without_a_cooling_block_is_a_no_op():
+    """The `cooling` block is OPTIONAL, so a heating-only side-car is ordinary input.
+
+    Unguarded, the attic branch dereferenced it and raised AttributeError — for the attic
+    ALONE, while every other space returned fine. A report rendering a mixed set of spaces
+    would have crashed on exactly one row and passed its own tests on all the others.
+    """
+    for name in ("attic", "crawlspace"):
+        declared = spaces.policy_for(name, {})
+        assert loads.effective_cooling_policy(name, declared, None) is declared
+
+
+def test_effective_cooling_policy_takes_the_outdoor_temp_from_the_cooling_block():
+    """The outdoor temp is DERIVED from `cooling`, never passed alongside it.
+
+    The removed `outdoor_f` parameter accepted the *heating* design temp without
+    complaint (13°F gave a 55.5°F "attic"), which is precisely the consumer divergence
+    this helper exists to prevent. 95°F is the only value it can now use: sol-air 137.5°F.
+    """
+    eff = loads.effective_cooling_policy("attic", spaces.policy_for("attic", {}),
+                                         _cooling(outdoor_1_f=95))
+    assert eff.summer_temp_f == pytest.approx(137.5)
+    assert eff.summer_temp_f == pytest.approx(spaces.sol_air_attic_temp_f(95.0))
+
+
+def test_effective_cooling_policy_needs_a_resolved_outdoor_temp_for_the_estimate():
+    """An unresolved `outdoor_1_f` must say so, not hand `None` to the sol-air arithmetic."""
+    with pytest.raises(ValueError, match="outdoor_1_f"):
+        loads.effective_cooling_policy("attic", spaces.policy_for("attic", {}),
+                                       _cooling(outdoor_1_f=None))
 
 
 def test_hot_attic_does_not_touch_the_heating_side():
