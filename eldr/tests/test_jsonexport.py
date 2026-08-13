@@ -99,6 +99,16 @@ spaces:
     summer_temp_f: 84
 """)
 
+# The attic half on its own, for the fixture that has no crawlspace surface to bind to.
+# `MULTI_LEVEL_FIXTURE` puts Main exactly over the Basement, so nothing faces a crawl —
+# and `loads` now warns about a `spaces:` key that binds to nothing, which would be a
+# true statement about a side-car this test does not mean to make.
+ATTIC_SPACE_ONLY = textwrap.dedent("""\
+spaces:
+  attic:
+    winter_temp_f: 26
+""")
+
 
 def _stack_paths(tmp_path, fixture, sidecar_body):
     home = tmp_path / "Home.xml"
@@ -180,7 +190,7 @@ def test_json_voids_present_but_empty_when_nothing_is_undrawn(tmp_path):
 
 def test_json_cooling_factor_is_null_without_a_cooling_block(tmp_path):
     """A heating-only side-car has no summer to resolve — null, not a fabricated factor."""
-    home, sc = _stack_paths(tmp_path, MULTI_LEVEL_FIXTURE, STACK_SIDECAR + STACK_SPACES)
+    home, sc = _stack_paths(tmp_path, MULTI_LEVEL_FIXTURE, STACK_SIDECAR + ATTIC_SPACE_ONLY)
     payload = jsonexport.analysis_to_dict(cli.analyze(home, sc))
     assert payload["spaces"]["attic"]["cooling_factor"] is None
     assert payload["spaces"]["attic"]["heating_factor"] == pytest.approx(0.80)

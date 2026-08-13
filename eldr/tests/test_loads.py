@@ -1,3 +1,5 @@
+import warnings
+
 import pytest
 from eldr import loads, geometry, sidecar, spaces
 
@@ -259,6 +261,72 @@ def test_buffer_floor_uses_its_space_policy():
     dt = sc.design.heating_delta_t
     expected = 0.5 * 100.0 * dt * (38.0 / 57.0) + 0.5 * 100.0 * dt * 0.25
     assert abs(res.conduction_btuh - expected) < 1e-6
+
+
+def test_a_spaces_key_that_binds_to_nothing_warns():
+    """`spaces:` was the only side-car block that swallowed a typo in silence.
+
+    `walls:` warns on an unknown wall id and `levels:` on an unknown level name; a
+    `spaces:` key matching no resolved space just never fires, and the surface quietly
+    loads at the built-in default. The numbers here are chosen so the difference is not
+    subtle: `crawl_space` against a surface facing `crawlspace` is 1425.0 BTU/hr at the
+    unvented default of 0.5, against 1900.0 if the declared 32 °F had been honoured.
+    """
+    env = _envelope([geometry.Surface("buffer_floor", 100.0, "crawlspace")])
+    sc = _sidecar(assemblies={"buffer_floor": 0.5},
+                  spaces={"crawl_space": spaces.SpacePolicy("crawl_space",
+                                                            winter_temp_f=32.0)})
+    with pytest.warns(UserWarning, match=r"crawl_space"):
+        res = loads.heating_load(env, sc)
+    dt = sc.design.heating_delta_t                        # 70 - 13 = 57
+    assert res.conduction_btuh == pytest.approx(0.5 * 100.0 * dt * 0.5)      # 1425.0
+    assert res.conduction_btuh != pytest.approx(0.5 * 100.0 * dt * (38.0 / 57.0))
+
+
+def test_a_spaces_key_bound_only_by_a_per_room_surface_does_not_warn():
+    """The whole-house surface list is not the whole answer: `env.rooms` carries its own,
+    independently built surfaces. A space reaching only that path is bound, not a typo."""
+    env = geometry.Envelope(
+        surfaces=[geometry.Surface("exterior_wall", 100.0)], volume_ft3=0.0,
+        rooms=[geometry.Room(name="r", level_id="LM", area_ft2=100.0, centroid_cm=(0, 0),
+                             conditioned=True,
+                             surfaces=[geometry.Surface("buffer_floor", 100.0,
+                                                        "crawlspace")])])
+    sc = _sidecar(assemblies={"exterior_wall": 0.1, "buffer_floor": 0.5},
+                  spaces={"crawlspace": spaces.SpacePolicy("crawlspace",
+                                                           winter_temp_f=32.0)})
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        loads.heating_load(env, sc)
+
+
+def test_every_spaces_key_binding_stays_silent():
+    """The other half of the bracket: the warning must not fire on a correct side-car."""
+    env = _envelope([geometry.Surface("buffer_floor", 100.0, "crawlspace"),
+                     geometry.Surface("ceiling", 100.0, "attic")])
+    sc = _sidecar(assemblies={"buffer_floor": 0.5, "ceiling": 0.03},
+                  spaces={"crawlspace": spaces.SpacePolicy("crawlspace", winter_temp_f=32.0),
+                          "attic": spaces.SpacePolicy("attic", vented=False)})
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")           # any warning at all fails the test
+        loads.heating_load(env, sc)
+
+
+def test_the_unbound_spaces_warning_reaches_cooling_and_per_room_too():
+    """All three public entry points read `spaces:`, so all three have to say so — a
+    cooling-only or duct-only run must not be the quiet path back to the old behaviour."""
+    env = geometry.Envelope(
+        surfaces=[geometry.Surface("ceiling", 100.0, "attic")], volume_ft3=0.0,
+        rooms=[geometry.Room(name="r", level_id="LM", area_ft2=100.0, centroid_cm=(0, 0),
+                             conditioned=True,
+                             surfaces=[geometry.Surface("ceiling", 100.0, "attic")])])
+    sc = _sidecar(assemblies={"ceiling": 0.03},
+                  spaces={"attik": spaces.SpacePolicy("attik", vented=False)},
+                  cooling=_cooling())
+    with pytest.warns(UserWarning, match=r"attik"):
+        loads.cooling_load(env, sc)
+    with pytest.warns(UserWarning, match=r"attik"):
+        loads.per_room_loads(env, sc)
 
 
 def test_ceiling_uses_the_attic_policy_not_outdoor_air():

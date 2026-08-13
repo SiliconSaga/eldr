@@ -276,7 +276,50 @@ def _cooling_dt_for(sc: sidecar.SideCar) -> Callable[[geometry.Surface], float]:
     return dt
 
 
+def unbound_spaces(env: geometry.Envelope, declared: dict) -> list[str]:
+    """Declared `spaces:` keys that no surface in this envelope faces, sorted.
+
+    A space is bound by NAME, and the name is produced by the geometry — an unconditioned
+    level's own SH3D name lowercased, or a level's `below_void` / `above_void`. So a
+    `crawl_space:` entry against a level called `Crawlspace` binds to nothing and the
+    policy it declares is never consulted; the surface falls back to the built-in default
+    and the load comes out at 0.5 of ΔT while the side-car says 32 °F.
+
+    The room sub-envelopes are searched too. They carry the same spaces as the whole-house
+    surface list today, but they are a second, independently built list, and a space that
+    reaches only the per-room path is declared for a reason.
+    """
+    faced = {s.space for s in env.surfaces if s.space is not None}
+    faced.update(s.space for r in env.rooms for s in r.surfaces if s.space is not None)
+    return sorted(set(declared) - faced)
+
+
+def _warn_unbound_spaces(env: geometry.Envelope, declared: dict) -> None:
+    """Warn once per load call about `spaces:` keys that bind to nothing.
+
+    Mirrors the unknown-wall-id and unknown-level-name warnings in `geometry`, which is
+    the precedent: both name a side-car key that addresses something absent from the
+    model. `spaces:` was the odd one out, and it is the block most likely to be
+    hand-copied out of the README with a name of the reader's own invention.
+
+    It lives here rather than in `sidecar` because the resolved space NAMES do not exist
+    until the envelope does — a side-car cannot be checked against the model it has not
+    been paired with yet — and here rather than in `geometry` because `geometry` must not
+    depend on `sidecar`.
+    """
+    unbound = unbound_spaces(env, declared)
+    if unbound:
+        # stacklevel=3: this frame, then the public entry point, landing on ITS caller.
+        warnings.warn(
+            f"side-car `spaces` declare names no surface in this model faces (renamed or "
+            f"typo'd?): {unbound} — their policies are ignored and those surfaces load at "
+            f"the built-in default instead. Spaces in play: "
+            f"{sorted({s.space for s in env.surfaces if s.space is not None})}",
+            stacklevel=3)
+
+
 def heating_load(env: geometry.Envelope, sc: sidecar.SideCar) -> HeatingResult:
+    _warn_unbound_spaces(env, sc.spaces)
     dt = sc.design.heating_delta_t
     conduction, by_category = _conduction(env.surfaces, sc.assemblies,
                                           _heating_dt_for(sc.design, sc.spaces))
@@ -306,6 +349,7 @@ def cooling_load(env: geometry.Envelope, sc: sidecar.SideCar) -> CoolingResult:
     """Sensible (conduction + orientation-resolved solar + internal) + latent cooling load."""
     if sc.cooling is None:
         raise ValueError("cooling requires a `cooling` block in the side-car")
+    _warn_unbound_spaces(env, sc.spaces)
     c = sc.cooling
     conduction, by_category = _conduction(env.surfaces, sc.assemblies, _cooling_dt_for(sc))
 
@@ -340,6 +384,7 @@ def per_room_loads(env: geometry.Envelope, sc: sidecar.SideCar) -> list[RoomLoad
     duct is sized for the worse mode. Internal (occupant + appliance) sensible gain is
     shared across conditioned rooms by floor area; unconditioned rooms get none.
     """
+    _warn_unbound_spaces(env, sc.spaces)
     heat_dt = sc.design.heating_delta_t
     heat_dt_for = _heating_dt_for(sc.design, sc.spaces)
     cool = sc.cooling
