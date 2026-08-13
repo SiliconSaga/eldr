@@ -315,6 +315,34 @@ def test_report_makes_no_treatment_claim_when_it_cannot_name_the_category():
     assert "Not a separate problem" not in md         # nothing to cross-reference either
 
 
+# `floor` is the one category deliberately left out of `_VOID_TREATMENT`, and the reason
+# is in the comment above that table: nearly every model has an on-grade floor, so its
+# presence in an envelope cannot show that a VOID became one. It is silent on purpose.
+_INTENTIONALLY_SILENT_VOID_CATEGORIES = {"floor"}
+
+
+def test_every_void_category_the_geometry_can_emit_is_explained_or_silent_on_purpose():
+    """`report._VOID_TREATMENT` hand-mirrors `geometry.CATEGORY_FOR_BELOW` by copy — there
+    is no constant to share, because one names categories and the other names what they
+    mean to a reader. That copy has no guard: renaming `exposed_floor` in `geometry`
+    degrades the report to no claim at all, quietly, with nothing failing.
+
+    Silence is the safe failure mode and stays allowed, but only for a category that is
+    listed here as silent on purpose. A NEW one has to be a deliberate decision.
+
+    Read through `_horizontal_surfaces` rather than off `CATEGORY_FOR_BELOW` alone, so the
+    default branch's `buffer_floor` — a bare literal in that function — is covered too.
+    """
+    from eldr import stack
+    below = {space: 1.0 for space in geometry.CATEGORY_FOR_BELOW}
+    below["an-undrawn-space"] = 1.0          # the default branch: any space name at all
+    split = stack.FaceSplit(room_id="r", below=below, above={}, void_below_ft2=1.0)
+    emitted = {s.category for s in geometry._horizontal_surfaces(split)}
+    assert len(emitted) > 1                  # the fixture reached more than one branch
+    assert not (emitted - set(report._VOID_TREATMENT)
+                - _INTENTIONALLY_SILENT_VOID_CATEGORIES)
+
+
 def test_report_echoes_buffer_space_factors():
     sc = sidecar.SideCar(
         assemblies={"exterior_wall": 0.1, "buffer_floor": 0.5},

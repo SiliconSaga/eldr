@@ -507,6 +507,97 @@ def test_sidecar_level_name_present_in_the_model_does_not_warn(tmp_path):
         geometry.extract_envelope(str(p), levels={"Main": sc_mod.LevelSpec(height_ft=9.0)})
 
 
+def _two_level_fixture(lower_name):
+    """Main (400x300 @212cm) sitting exactly on `lower_name` (400x300 @0cm), both roomed.
+
+    What the lower level IS decides Main's whole floor: conditioned below means Main's
+    floor is interior and emits nothing, unconditioned below means it is a `buffer_floor`
+    facing that level's name. So the two roles produce disjoint surface sets — there is no
+    reading of the output that is compatible with both.
+    """
+    return textwrap.dedent(f"""\
+    <?xml version='1.0'?>
+    <home version='7400' name='t' wallHeight='300'>
+      <level id='LL' name='{lower_name}' elevation='0.0' floorThickness='12.0' height='200' elevationIndex='0'/>
+      <level id='LM' name='Main' elevation='212.0' floorThickness='12.0' height='250' elevationIndex='0'/>
+      <wall id='l-n' level='LL' xStart='0' yStart='0' xEnd='400' yEnd='0' height='200' thickness='10'/>
+      <wall id='l-s' level='LL' xStart='0' yStart='300' xEnd='400' yEnd='300' height='200' thickness='10'/>
+      <wall id='l-w' level='LL' xStart='0' yStart='0' xEnd='0' yEnd='300' height='200' thickness='10'/>
+      <wall id='l-e' level='LL' xStart='400' yStart='0' xEnd='400' yEnd='300' height='200' thickness='10'/>
+      <wall id='m-n' level='LM' xStart='0' yStart='0' xEnd='400' yEnd='0' height='250' thickness='10'/>
+      <wall id='m-s' level='LM' xStart='0' yStart='300' xEnd='400' yEnd='300' height='250' thickness='10'/>
+      <wall id='m-w' level='LM' xStart='0' yStart='0' xEnd='0' yEnd='300' height='250' thickness='10'/>
+      <wall id='m-e' level='LM' xStart='400' yStart='0' xEnd='400' yEnd='300' height='250' thickness='10'/>
+      <room id='rl' level='LL' name='Lower Room'>
+        <point x='0' y='0'/><point x='400' y='0'/><point x='400' y='300'/><point x='0' y='300'/>
+      </room>
+      <room id='rm' level='LM' name='Living room'>
+        <point x='0' y='0'/><point x='400' y='0'/><point x='400' y='300'/><point x='0' y='300'/>
+      </room>
+    </home>
+    """)
+
+
+def _spaces_faced(env, category):
+    """The space names the envelope's surfaces of `category` face."""
+    return {s.space for s in env.surfaces if s.category == category}
+
+
+def test_role_unconditioned_overrides_a_name_the_heuristic_reads_as_conditioned(tmp_path):
+    """`role:` is the documented override for the one decision that drives the entire
+    horizontal envelope, and nothing exercised it — making the side-car branch of
+    `_level_conditioned` `if False:` passed the whole suite.
+
+    "Crawl Space" is the fixture because the heuristic it replaces is a bare prefix match
+    on `crawlspace`, so a SPACE in the name is enough to defeat it: SH3D lets you name a
+    level anything, and the level's role is exactly the thing the modeler cannot be asked
+    to encode in its name. Untouched, that level reads as conditioned and Main's floor
+    vanishes into `interior`; the override has to bring back 400x300 of buffer floor.
+    """
+    from eldr import sidecar as sc_mod
+    from eldr import units
+    p = tmp_path / "Home.xml"
+    p.write_text(_two_level_fixture("Crawl Space"))
+    foot = units.sqcm_to_sqft(400 * 300)
+
+    heuristic = _by_cat(geometry.extract_envelope(str(p)))
+    assert "buffer_floor" not in heuristic        # read as conditioned -> Main sits on interior
+    assert heuristic["floor"] == pytest.approx(foot)   # the lower level got the slab
+
+    env = geometry.extract_envelope(
+        str(p), levels={"Crawl Space": sc_mod.LevelSpec(role="unconditioned")})
+    cats = _by_cat(env)
+    assert cats["buffer_floor"] == pytest.approx(foot)
+    assert _spaces_faced(env, "buffer_floor") == {"crawl space"}
+    assert "floor" not in cats                    # no conditioned room on grade any more
+
+
+def test_role_conditioned_pulls_a_level_the_heuristic_excludes_back_into_the_envelope(
+        tmp_path):
+    """The other direction, and the one a `role: conditioned` entry exists for: a level
+    the name heuristic throws out. `Garage` matches the prefix, so by default Main's floor
+    is a buffer floor over it; declaring it conditioned makes it a storey — Main's floor
+    becomes interior and the garage level takes the slab instead.
+
+    Both directions are needed. A test of only one passes with the branch hard-wired to
+    the answer that direction wants.
+    """
+    from eldr import sidecar as sc_mod
+    from eldr import units
+    p = tmp_path / "Home.xml"
+    p.write_text(_two_level_fixture("Garage"))
+    foot = units.sqcm_to_sqft(400 * 300)
+
+    heuristic = geometry.extract_envelope(str(p))
+    assert _by_cat(heuristic)["buffer_floor"] == pytest.approx(foot)
+    assert _spaces_faced(heuristic, "buffer_floor") == {"garage"}
+
+    cats = _by_cat(geometry.extract_envelope(
+        str(p), levels={"Garage": sc_mod.LevelSpec(role="conditioned")}))
+    assert "buffer_floor" not in cats
+    assert cats["floor"] == pytest.approx(foot)
+
+
 def test_sidecar_level_height_override_changes_volume(tmp_path):
     from eldr import sidecar as sc_mod
     p = tmp_path / "Home.xml"

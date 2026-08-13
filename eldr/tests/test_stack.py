@@ -175,6 +175,104 @@ def test_face_areas_sum_to_the_room_polygon_area():
     assert sum(faces.above.values()) == pytest.approx(area, rel=1e-9)
 
 
+# An L whose every corner lands off the raster: 437 x 283 overall with a 234 x 152 notch.
+#
+# `resolve_faces` divides each room's bounding box into a WHOLE number of cells, so an
+# axis-aligned RECTANGLE fills its bbox exactly and its raster area equals its shoelace
+# area to the last bit — 0.000% drift. That makes a rectangle useless for testing
+# `_to_room_area`: normalization is a no-op on it, and replacing the function with
+# `return areas` passes. Only a shape whose edges cut through cells can disagree, and
+# this one is 2.65% short.
+_ODD_ELL_POINTS = [(0, 0), (437, 0), (437, 131), (203, 131), (203, 283), (0, 283)]
+
+
+def _odd_ell(rid="rm", lid="LM"):
+    from eldr import units
+    return {"id": rid, "name": rid, "level_id": lid, "points": list(_ODD_ELL_POINTS),
+            "area_ft2": units.sqcm_to_sqft(437 * 131 + 203 * (283 - 131)),
+            "conditioned": True}
+
+
+def test_face_areas_sum_to_the_polygon_area_a_raster_cannot_reach():
+    """`_to_room_area` is the branch's headline invariant, and a rectangle cannot test it.
+
+    Companion to `test_face_areas_sum_to_the_room_polygon_area` above, which uses a
+    rectangle: there the raster already lands exactly on the polygon area, so the
+    normalization it claims to pin is a no-op and the assertion holds with
+    `_to_room_area` replaced by `return areas`. This L cannot be rastered exactly, so the
+    same assertion only holds if the scaling really runs.
+
+    `void_below_ft2` is the proof the fixture is not another no-op: it is reported as
+    MEASURED and never normalized, so with the whole floor over nothing it *is* the raw
+    raster area — and it comes out 2.65% below the polygon area rather than equal to it.
+    """
+    room = _odd_ell()
+    levels = [_lv("LB", "Basement", 0.0), _lv("LM", "Main", 250.0)]
+    rooms = {"LB": [_room("rb", "LB", 1000, 0, 1400, 300)],     # beside, never beneath
+             "LM": [room]}
+    faces = _resolve(levels, rooms)["rm"]
+    area = room["area_ft2"]
+    assert abs(faces.void_below_ft2 / area - 1) > 0.02      # a rectangle drifts 0.000%
+    assert sum(faces.below.values()) == pytest.approx(area, rel=1e-12)
+    assert sum(faces.above.values()) == pytest.approx(area, rel=1e-12)
+
+
+def test_a_split_face_is_normalized_across_its_categories_not_onto_one():
+    """The same un-rasterable L, half over a basement: two categories, and the drift is
+    re-absorbed in proportion rather than dumped on either one.
+
+    A single-category fixture cannot tell `{k: v * area / total}` apart from
+    `{k: area for k in areas}` — both make the sum come out right when there is only one
+    k. The split does, and it is the shape every real room has.
+    """
+    room = _odd_ell()
+    levels = [_lv("LB", "Basement", 0.0), _lv("LM", "Main", 250.0)]
+    rooms = {"LB": [_room("rb", "LB", 0, 0, 203, 283)], "LM": [room]}
+    faces = _resolve(levels, rooms)["rm"]
+    area = room["area_ft2"]
+    assert set(faces.below) == {"interior", "crawlspace"}
+    assert sum(faces.below.values()) == pytest.approx(area, rel=1e-12)
+    assert faces.below["interior"] == pytest.approx(61.30107, rel=1e-4)
+    assert faces.below["crawlspace"] == pytest.approx(33.53221, rel=1e-4)
+
+
+# A void strip along the room's east edge, `gap_cm` wide, with the basement drawn right up
+# to it. At GRID_CM=15 the room's 400cm span becomes 26 columns of 15.38cm, so 30cm is two
+# columns and 46cm is three — the tightest bracket the grid allows.
+#
+# Two columns has no cell far enough from real coverage to seed an eroded core at a 20cm
+# tolerance, so the strip dissolves entirely; three columns does, so it opens back up and
+# survives. Drop the tolerance to 0 and the two-column strip survives too; raise it to 45
+# and the three-column strip dies. The constant is therefore held from both sides.
+#
+# GRID_CM is pinned by the same pair, because the two are coupled: at grid 5 the
+# two-column case becomes six columns and survives, at grid 60 the three-column case
+# stops resolving a void cell at all.
+@pytest.mark.parametrize("gap_cm, absorbed", [(30, True), (46, False)],
+                         ids=["inside-the-tolerance", "outside-it"])
+def test_void_tolerance_is_pinned_from_both_sides(gap_cm, absorbed):
+    """`TOLERANCE_CM` and `GRID_CM` decide how much of a real house's floor is itemized as
+    a schematic gap rather than billed as load, and until now nothing held either one:
+    0, 45 and a 12x grid change all passed. On Refrhus those choices move the void
+    itemization from 2 rooms to 4 and the drawn-crawl area by up to 16 ft².
+
+    Both are captured as DEFAULT ARGUMENTS of `resolve_faces`, bound at import, so
+    monkeypatching the module attribute changes nothing — they have to be read off the
+    module and passed explicitly for a test to bind to the shipped values at all.
+    """
+    levels = [_lv("LB", "Basement", 0.0), _lv("LM", "Main", 250.0)]
+    rooms = {"LB": [_room("rb", "LB", 0, 0, 400 - gap_cm, 300)],
+             "LM": [_room("rm", "LM", 0, 0, 400, 300)]}
+    faces = _resolve(levels, rooms,
+                     tolerance_cm=stack.TOLERANCE_CM, grid_cm=stack.GRID_CM)["rm"]
+    if absorbed:
+        assert set(faces.below) == {"interior"}
+        assert faces.void_below_ft2 == 0.0
+    else:
+        assert set(faces.below) == {"interior", "crawlspace"}
+        assert faces.void_below_ft2 > 0.0
+
+
 def test_non_convex_room_excludes_its_own_notch():
     """A room is not its bounding box. This L keeps its notch clear of the only thing
     drawn below, which sits entirely inside that notch — so the L faces nothing, and a
