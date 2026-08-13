@@ -217,7 +217,11 @@ def test_buffer_wall_heating_fraction_and_u_fallback():
         design=sidecar.DesignConditions(70, 20, 50),   # air ΔT 50
         infiltration_ach=0.0,
     )
-    r = loads.heating_load(env, sc)
+    # the severity note is donor-specific: a buffer wall and an exterior wall are the same
+    # construction with a different boundary, so this borrow must NOT claim the
+    # order-of-magnitude gap that only the slab-vs-framed-floor borrow earns.
+    with pytest.warns(UserWarning, match="different boundary"):
+        r = loads.heating_load(env, sc)
     assert abs(r.by_category["buffer_wall"] - 0.1 * 100 * (loads.BUFFER_FACTOR * 50)) < 1e-6
 
 
@@ -356,15 +360,54 @@ def test_cooling_attic_temp_beats_sol_air():
 
 
 def test_hot_attic_applies_only_to_the_attic_space():
-    """A crawlspace is not sun-heated: it keeps the ordinary unvented half-ΔT, and the
-    attic override must not leak into it."""
-    env = _envelope([geometry.Surface("buffer_floor", 100.0, "crawlspace")])
-    sc = _sidecar(assemblies={"buffer_floor": 0.5},
+    """The space gate is `== "attic"`, not `in`, and `sub_attic` is what proves it.
+
+    A crawlspace would be a toothless fixture here: `"attic" in "crawlspace"` is False,
+    so the substring bug this branch has already been bitten by once (`"floor"` inside
+    `"buffer_floor"`) would sail past it. `sub_attic` CONTAINS "attic", so it fails
+    loudly under an `in` gate while staying an ordinary unvented space under `==`.
+    """
+    env = _envelope([geometry.Surface("ceiling", 100.0, "sub_attic"),
+                     geometry.Surface("buffer_floor", 100.0, "crawlspace")])
+    sc = _sidecar(assemblies={"ceiling": 0.03, "buffer_floor": 0.5},
                   cooling=_cooling(outdoor_1_f=95, attic_temp_f=130.0))
     res = loads.cooling_load(env, sc)
     air = sc.cooling.cooling_delta_t                       # 20
+    # 30, not the 165 an `in` gate would give by applying the 130°F attic temperature
+    assert res.by_category["ceiling"] == pytest.approx(0.03 * 100.0 * air
+                                                       * spaces.UNVENTED_FACTOR)
     assert res.by_category["buffer_floor"] == pytest.approx(0.5 * 100.0 * air
                                                             * spaces.UNVENTED_FACTOR)
+
+
+def test_effective_cooling_policy_is_the_shared_resolution_point():
+    """Task 8's report and Task 9's JSON export must render the policy that was USED.
+
+    Resolving `spaces.policy_for("attic", {})` alone gives the bare unvented default and
+    a cooling factor of 0.5, while the engine loads the ceiling at 2.75 — so this helper
+    is the single place both the engine and any reporting consumer must go through.
+    """
+    c = _cooling(outdoor_1_f=95, attic_temp_f=130.0)
+    declared = spaces.policy_for("attic", {})
+    assert declared.summer_temp_f is None                  # nothing declared to render
+    eff = loads.effective_cooling_policy("attic", declared, c, 95.0)
+    assert eff.summer_temp_f == 130.0
+    assert eff.name == "attic" and eff.vented is False     # the rest of the policy survives
+    # and the factor a report would print now matches what the engine actually applied
+    assert spaces.cooling_factor(eff, 75.0, 95.0) == pytest.approx((130.0 - 75.0) / 20.0)
+
+
+def test_effective_cooling_policy_leaves_other_spaces_alone():
+    c = _cooling(outdoor_1_f=95, attic_temp_f=130.0)
+    for name in ("crawlspace", "garage", "sub_attic", "attic_2"):
+        declared = spaces.policy_for(name, {})
+        assert loads.effective_cooling_policy(name, declared, c, 95.0) is declared
+
+
+def test_effective_cooling_policy_defers_to_a_declared_summer_temp():
+    c = _cooling(outdoor_1_f=95, attic_temp_f=130.0)
+    declared = spaces.SpacePolicy("attic", summer_temp_f=105.0)
+    assert loads.effective_cooling_policy("attic", declared, c, 95.0) is declared
 
 
 def test_hot_attic_does_not_touch_the_heating_side():
@@ -392,6 +435,26 @@ def test_vented_attic_still_gets_the_hot_attic_treatment_in_cooling():
     # and heating is untouched: vented -> the full outdoor ΔT there
     heat = loads.heating_load(env, sc)
     assert heat.conduction_btuh == pytest.approx(0.03 * 100.0 * sc.design.heating_delta_t)
+
+
+def test_declared_attic_factor_is_also_a_winter_only_shorthand():
+    """The `factor` twin of the vented case, pinned because it is the same override.
+
+    An explicit `factor: 0.25` is a stronger-looking declaration than `vented`, so it is
+    worth stating outright that it too is outranked in summer by the hot-attic
+    resolution — 0.25 is chosen so the overridden answer (187.5, sol-air) and the
+    obeyed one (15) cannot be confused.
+    """
+    env = _envelope([geometry.Surface("ceiling", 100.0, "attic")])
+    sc = _sidecar(assemblies={"ceiling": 0.03},
+                  spaces={"attic": spaces.SpacePolicy("attic", factor=0.25)},
+                  cooling=_cooling(outdoor_1_f=95))
+    res = loads.cooling_load(env, sc)
+    assert res.by_category["ceiling"] == pytest.approx(0.03 * 100.0 * (137.5 - 75.0))
+    # winter still obeys it: 0.25 of the heating ΔT, not the unvented 0.5
+    heat = loads.heating_load(env, sc)
+    assert heat.conduction_btuh == pytest.approx(
+        0.03 * 100.0 * sc.design.heating_delta_t * 0.25)
 
 
 def test_cooling_buffer_floor_uses_its_space_policy():
@@ -451,6 +514,9 @@ def test_borrowing_an_assembly_u_warns_naming_both_categories():
     # asserting `"floor" in msg` passes on any message naming only `buffer_floor`. Its
     # U-value is the sharp test — it can only have come from reading the donor entry.
     assert "buffer_floor" in msg                           # the recipient
+    assert "`floor`" in msg                                # the donor, backticked so the
+    #                                                        substring of the recipient
+    #                                                        (`buffer_floor`) cannot satisfy it
     assert "0.02" in msg                                   # the donor's U-value, verbatim
 
 

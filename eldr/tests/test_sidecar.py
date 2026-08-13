@@ -176,6 +176,14 @@ def test_cooling_attic_temp_must_exceed_indoor(tmp_path):
         sidecar.load_sidecar(_write(tmp_path, _VALID + bad))
 
 
+def test_cooling_attic_temp_equal_to_indoor_is_rejected(tmp_path):
+    # the boundary itself: the check is `<=`, not `<` — an attic exactly at the setpoint
+    # contributes no ceiling gain at all, which is never what the override was set for
+    bad = _COOLING + "      attic_temp_f: 75\n"
+    with pytest.raises(ValueError, match="attic_temp_f"):
+        sidecar.load_sidecar(_write(tmp_path, _VALID + bad))
+
+
 def test_cooling_attic_temp_must_be_finite(tmp_path):
     bad = _COOLING + "      attic_temp_f: .inf\n"
     with pytest.raises(ValueError, match="attic_temp_f"):

@@ -156,12 +156,42 @@ def _heating_dt_for(design, declared_spaces) -> Callable[[geometry.Surface], flo
     return dt
 
 
+ATTIC_SPACE = "attic"
+
+
+def effective_cooling_policy(space: str, policy: spaces.SpacePolicy,
+                             cooling: sidecar.Cooling,
+                             outdoor_f: float) -> spaces.SpacePolicy:
+    """The policy the cooling resolver ACTUALLY applies, with the attic's summer
+    temperature filled in.
+
+    ANY consumer that reports, renders or exports a cooling factor must resolve through
+    this, not through `spaces.policy_for` alone. `policy_for` returns what the side-car
+    *declared*; for the attic that is usually nothing at all, and the bare unvented
+    default yields a cooling factor of 0.5 — while the engine is meanwhile loading the
+    ceiling at ~2.9. A report showing the declared policy would be confidently wrong,
+    and its own tests would pass while it was.
+
+    The substitution is the hot attic: `vented`/`factor` are winter shorthands and both
+    cap the attic at or below outdoor air, which is backwards for a sunlit summer day.
+    So unless an observed `summer_temp_f` says otherwise, the attic gets a real
+    temperature — the side-car's `cooling.attic_temp_f`, else the sol-air estimate.
+    Every other space is returned untouched: a crawlspace or garage sees no roof sun.
+    """
+    if space == ATTIC_SPACE and policy.summer_temp_f is None:
+        attic_f = (cooling.attic_temp_f if cooling.attic_temp_f is not None
+                   else spaces.sol_air_attic_temp_f(outdoor_f))
+        return dataclasses.replace(policy, summer_temp_f=attic_f)
+    return policy
+
+
 def _cooling_dt_for(design, cooling, declared_spaces) -> Callable[[geometry.Surface], float]:
     """ΔT resolver for cooling. A space's factor may exceed 1: a sun-heated attic runs
     hotter than outdoor air, so its ceiling sees a LARGER ΔT than the outdoor design one.
 
     Attic temperature precedence, strongest first: an observed `spaces.attic.summer_temp_f`,
-    then the side-car's `cooling.attic_temp_f`, then the sol-air estimate.
+    then the side-car's `cooling.attic_temp_f`, then the sol-air estimate — all resolved by
+    `effective_cooling_policy`, which reporting consumers must share.
     """
     air = cooling.cooling_delta_t
     ground = max(0.0, design.ground_temp_f - cooling.indoor_f)
@@ -171,16 +201,8 @@ def _cooling_dt_for(design, cooling, declared_spaces) -> Callable[[geometry.Surf
         if s.category in GROUND_COUPLED_CATEGORIES:
             return ground
         if s.space is not None:
-            policy = spaces.policy_for(s.space, declared_spaces)
-            # The hot attic. `vented`/`factor` are winter shorthands and both cap the
-            # attic at or below outdoor air, which is backwards for a sunlit summer day
-            # — so unless an observed `summer_temp_f` says otherwise, the attic gets a
-            # real temperature: the side-car's `cooling.attic_temp_f`, else the sol-air
-            # estimate. Only `attic`: a crawlspace or garage sees no roof sun.
-            if s.space == "attic" and policy.summer_temp_f is None:
-                attic_f = (cooling.attic_temp_f if cooling.attic_temp_f is not None
-                           else spaces.sol_air_attic_temp_f(outdoor))
-                policy = dataclasses.replace(policy, summer_temp_f=attic_f)
+            policy = effective_cooling_policy(
+                s.space, spaces.policy_for(s.space, declared_spaces), cooling, outdoor)
             return spaces.cooling_factor(policy, indoor, outdoor) * air
         if s.category == BUFFER_WALL_CATEGORY:
             return BUFFER_FACTOR * air
