@@ -294,3 +294,19 @@ def test_unconditioned_rooms_get_no_faces():
     levels = [_lv("LG", "Garage", 0.0, conditioned=False)]
     rooms = {"LG": [_room("rg", "LG", 0, 0, 400, 300, conditioned=False)]}
     assert _resolve(levels, rooms) == {}
+
+
+def test_whitespace_only_level_name_still_gets_a_space_name():
+    """A blank SH3D level name must not strip down to "". The above-face resolves with
+    `found or this_above_void`, so a falsy "" would silently become `attic`; the
+    below-face tests `is not None`, so it would keep a nameless category instead. Both
+    are wrong, and they disagree — the fallback has to survive the strip."""
+    levels = [_lv("LU", "   ", 0.0, conditioned=False),
+              _lv("LM", "Main", 250.0),
+              _lv("LA", "\t\n", 500.0, conditioned=False)]
+    rooms = {"LU": [_room("ru", "LU", 0, 0, 400, 300, conditioned=False)],
+             "LM": [_room("rm", "LM", 0, 0, 400, 300)],
+             "LA": [_room("ra", "LA", 0, 0, 400, 300, conditioned=False)]}
+    faces = _resolve(levels, rooms)
+    assert set(faces["rm"].below) == {"space"}
+    assert set(faces["rm"].above) == {"space"}      # NOT "attic"

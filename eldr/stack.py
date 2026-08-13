@@ -19,14 +19,25 @@ from dataclasses import dataclass
 
 from eldr import units
 
-# Void cells within this distance of the room's own outline are treated as wall
-# misalignment rather than real exposure. Sized just over a typical framed wall
-# thickness (7in = 17.8cm) — artifacts hug the boundary; real voids reach inside.
+# How far into a VOID REGION the misalignment tolerance reaches. A void cell within
+# this distance of real coverage is treated as wall misalignment rather than real
+# exposure. Sized just over a typical framed wall thickness (7in = 17.8cm) — an
+# artifact is at most a wall thick, so it dissolves entirely; a real void is fat, so
+# its core is out of reach and survives. (This is measured against the void's own
+# boundary, never against the room's outline — see _settle_voids.)
 TOLERANCE_CM = 20.0
 # A resolved region smaller than this is noise (a shared wall clipping the level
 # below) and is redistributed across the surviving categories.
 MIN_REGION_FT2 = 2.0
 # Rasterization cell size. 15cm cells are ~0.24 ft^2 — far finer than MIN_REGION_FT2.
+#
+# TOLERANCE_CM and GRID_CM are COUPLED, which they did not use to be. _settle_voids
+# does a morphological opening (erode, then dilate), and the gap metric reaches one
+# cell further than the tolerance itself, so a void narrower than
+#     2 x (TOLERANCE_CM + one cell)
+# dissolves completely: ~70cm at the current settings, ~80cm at GRID_CM=20, ~60cm at
+# GRID_CM=10. Grid size was once a pure discretization knob — refining it now also
+# narrows what counts as an artifact, so move it deliberately, not for speed.
 GRID_CM = 15.0
 
 
@@ -187,8 +198,14 @@ def _covering_room(x, y, rooms):
 
 def _space_name(level: LevelInfo) -> str:
     """An unconditioned level becomes a named buffer space — its own name, lowercased,
-    so `spaces:` in the side-car keys off something the owner can see in SH3D."""
-    return (level.name or "space").strip().lower()
+    so `spaces:` in the side-car keys off something the owner can see in SH3D.
+
+    The fallback is re-checked AFTER stripping: a whitespace-only SH3D name would
+    otherwise yield "", and an empty category is wrong in two different directions —
+    the above-face's `found or this_above_void` would quietly relabel it `attic`, while
+    the below-face's `is not None` test would keep it as a nameless space.
+    """
+    return (level.name or "").strip().lower() or "space"
 
 
 def _tidy(areas: dict[str, float], min_region_ft2: float) -> dict[str, float]:
@@ -214,9 +231,10 @@ def _to_room_area(areas: dict[str, float], area_ft2: float) -> dict[str, float]:
     """Scale a face's categories so they sum to the room's own polygon area.
 
     The resolver decides how a floor or ceiling SPLITS, never how much of it there is —
-    that is the shoelace area upstream. Two things otherwise leak area away: void cells
-    inside the misalignment tolerance are dropped outright rather than reassigned, and a
-    raster only approximates a polygon. Both are re-absorbed here, in proportion.
+    that is the shoelace area upstream. No cell is discarded on the way here: an
+    artifact void is reassigned to what it was mismeasured against, not dropped. What
+    this re-absorbs is the remaining discretization drift — a raster of whole cells only
+    approximates a polygon's edges — spread across the categories in proportion.
     """
     total = sum(areas.values())
     if not areas or total <= 0.0:
