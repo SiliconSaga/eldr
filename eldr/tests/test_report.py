@@ -289,9 +289,30 @@ def test_report_cross_references_the_borrow_on_the_exposed_floor_branch_too():
     showed `exposed_floor` borrowing the same severe slab donor — two blocks quoting
     64.6 ft² with no stated relation, which is the exact defect it exists to close."""
     md = report.render_heating(_result(), _sc_slab(), env=_exposed_void_env())
-    assert "| `exposed_floor` |" in md         # the borrow table row it points at
+    # Cell-level, so this establishes the row is the BORROW table's — a document-wide
+    # `"| \`exposed_floor\` |" in md` pins only a first cell and would be satisfied by
+    # any table that happens to lead with that category.
+    cells = _row(md, "`exposed_floor`")
+    assert cells[2] == "64.6 ft²"                     # area
+    assert cells[4] == "`assemblies.floor`"           # the severe slab donor
+    assert "order of magnitude" in cells[5]           # and the severity note
     callout = next(l for l in md.splitlines() if l.startswith("- Not a separate problem"))
     assert "`exposed_floor`" in callout and "64.6 ft²" in callout
+
+
+def test_report_makes_no_treatment_claim_when_it_cannot_name_the_category():
+    """`below_void: ground` resolves a void to a ground-coupled `floor`, which is not a
+    category this block can key off — nearly every model has an on-grade floor, so its
+    presence proves nothing. Say nothing rather than guess: a wrong category here is
+    also a wrong ΔT, and the phrasing sounds careful either way."""
+    env = _env(voids={"Sunroom": 64.6},
+               surfaces=[geometry.Surface("floor", 64.6, None)])
+    md = report.render_heating(_result(), _sc_slab(), env=env)
+    warning = next(l for l in md.splitlines() if l.startswith("⚠ **"))
+    assert warning.endswith("has no level drawn beneath it**.")   # the gap, and no more
+    assert "modeled as" not in warning
+    assert "buffer" not in md.lower()
+    assert "Not a separate problem" not in md         # nothing to cross-reference either
 
 
 def test_report_echoes_buffer_space_factors():

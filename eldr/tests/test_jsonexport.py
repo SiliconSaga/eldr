@@ -148,8 +148,8 @@ def test_json_carries_levels_spaces_voids_and_surfaces(tmp_path):
     # over the shrunken Basement. Without a literal here, an export that scaled or
     # truncated every area would satisfy every other assertion in this file.
     assert ceiling["area_ft2"] == pytest.approx(129.17, abs=0.01)
-    exposed = next(s for s in payload["surfaces"] if s["category"] == "buffer_floor")
-    assert exposed["area_ft2"] == pytest.approx(64.58, abs=0.01)
+    void_floor = next(s for s in payload["surfaces"] if s["category"] == "buffer_floor")
+    assert void_floor["area_ft2"] == pytest.approx(64.58, abs=0.01)
 
 
 def test_json_attic_cooling_factor_is_the_applied_one_not_the_declared_one(tmp_path):

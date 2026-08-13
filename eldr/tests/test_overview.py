@@ -153,6 +153,30 @@ def test_borrowed_bullet_inflects_both_verbs_for_one_category(tmp_path):
     assert "`buffer_floor` has no `assemblies` entry and stands in on a related" in honesty
 
 
+def test_void_caveat_names_no_category_when_the_envelope_cannot_supply_one(tmp_path):
+    """The sibling-module half of the void-category fix.
+
+    `report` deliberately makes no treatment claim when it cannot name the category, but
+    this bullet kept an `or "buffer floor"` fallback — the exact string the fix removed.
+    It is reachable: `below_void` is a free string and `below_void: ground` resolves the
+    void to a ground-coupled `floor`, so the bullet claimed a buffer at half the ΔT for
+    an area the engine had coupled to soil. The gap is still reported; only the
+    unsupportable clause goes."""
+    honesty = _honesty(tmp_path, SIDECAR + "levels:\n  Main:\n    below_void: ground\n")
+    bullet = next(l for l in honesty.splitlines() if "drawn beneath it" in l)
+    assert "buffer floor" not in bullet and "`buffer_floor`" not in bullet
+    assert "modeled as" not in bullet
+    assert "gap in the drawing" in bullet          # the caveat itself still stands
+
+
+def test_void_caveat_names_the_category_when_the_envelope_does_supply_one(tmp_path):
+    """The other branch, so the test above cannot be satisfied by dropping the clause
+    unconditionally — which would lose a real disclosure on every normal model."""
+    honesty = _honesty(tmp_path, SIDECAR)
+    bullet = next(l for l in honesty.splitlines() if "drawn beneath it" in l)
+    assert "modeled as `buffer_floor` over undrawn space" in bullet
+
+
 def test_borrowed_bullet_inflects_both_verbs_for_several_categories(tmp_path):
     """Tagging a wall `buffer` adds a second borrowed category (`buffer_wall` borrows
     `exterior_wall`), so the same sentence must go plural in both places at once."""

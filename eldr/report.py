@@ -247,14 +247,24 @@ def _borrows_block(env: geometry_mod.Envelope, sc: sidecar.SideCar) -> list[str]
 _VOID_TOP_N = 3
 
 # What a floor face over an UNDRAWN space can become, and what each one means thermally.
-# Mirrors `geometry.CATEGORY_FOR_BELOW` and its `buffer_floor` default; a void never
-# resolves to `floor`, which is the on-grade case.
 #
-# Naming the default unconditionally was wrong on the `outdoor` branch in two directions
+# Naming a category unconditionally was wrong on the `outdoor` branch in two directions
 # at once — wrong category, and "buffer" reading as the 50% a buffer implies while the
 # engine had actually applied the `outdoor` policy's 1.0. The reassuring parenthetical
 # hedged the space NAME but not the TREATMENT, so it understated the load while sounding
-# careful. Derive the category from what the envelope really carries instead.
+# careful. Hence: category and treatment live together here, so no caller can state one
+# without the other, and a category absent from this table produces NO claim at all.
+#
+# `floor` is deliberately absent even though `below_void: ground` reaches it
+# (`geometry.CATEGORY_FOR_BELOW`). Its presence in an envelope proves nothing: nearly
+# every model has an on-grade floor on its lowest level, so keying off it would report a
+# void as ground-coupled on almost any house. Better to say nothing than to guess — that
+# is the same rule the whole block now follows.
+#
+# Caveat worth knowing: this table hand-mirrors `geometry.CATEGORY_FOR_BELOW`'s values by
+# copy, not by import — `geometry` names the categories, this names what they mean to a
+# reader, and there is no single constant to share. A new mapping there needs an entry
+# here, or its treatment simply goes unstated (silent, not wrong).
 _VOID_TREATMENT = {
     "buffer_floor": "over the undrawn space below (`crawlspace`, unless a level's "
                     "`below_void` names another), at that space's own fraction of the "
@@ -264,8 +274,21 @@ _VOID_TREATMENT = {
 }
 
 
-def _void_categories(env: geometry_mod.Envelope) -> list[str]:
-    """Which of the void categories this envelope actually carries, in a stable order."""
+def void_categories(env: geometry_mod.Envelope) -> list[str]:
+    """Which void categories this envelope carries, in a stable order; may be empty.
+
+    Public because `overview` renders the same claim in its own words and must not
+    re-derive it: the first fix here left `overview` with a hardcoded fallback naming the
+    very category the fix removed, so two modules disagreeing about this derivation is
+    not hypothetical — it already happened once.
+
+    KNOWN LIMITATION: this answers "which void categories does this envelope contain
+    anywhere", not "which categories did THESE voids become". A model whose levels name
+    different `below_void`s carries both, and every caller then states both — one of them
+    describing an area the voids did not produce. Closing it means carrying the category
+    on the void itself (see the branch's task-9 report); until then callers must not
+    present a per-category area as if it were the void's own.
+    """
     present = {s.category for s in env.surfaces}
     return [c for c in _VOID_TREATMENT if c in present]
 
@@ -278,7 +301,7 @@ def _voids_block(env: geometry_mod.Envelope, sc: sidecar.SideCar) -> list[str]:
     shown = ranked[:_VOID_TOP_N]
     largest = ", ".join(f"{name} {area:,.1f} ft²" for name, area in shown)
     of_n = f" ({len(shown)} of {len(ranked)} rooms)" if len(ranked) > len(shown) else ""
-    categories = _void_categories(env)
+    categories = void_categories(env)
     # No horizontal surfaces to read the category off (a caller rendering a bare
     # Envelope): say nothing about the treatment rather than assert the default.
     modeled = ("" if not categories else " — modeled as "

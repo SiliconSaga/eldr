@@ -224,8 +224,11 @@ def test_below_void_outdoor_reaches_exposed_floor_and_the_report_says_so(tmp_pat
     assert not any(s.category == "buffer_floor" for s in env.surfaces)
     assert env.voids                                  # still reported as a schematic gap
 
-    # the full ΔT, not a buffer fraction — the claim the old warning contradicted
-    with pytest.warns(UserWarning):                   # exposed_floor borrows `floor`
+    # the full ΔT, not a buffer fraction — the claim the old warning contradicted.
+    # `match=` pins WHICH warning: a bare `pytest.warns(UserWarning)` is satisfied by any
+    # warning at all, including the unrelated scaffolding and unknown-level-name ones this
+    # module can raise, so it would keep passing if the borrow stopped announcing itself.
+    with pytest.warns(UserWarning, match=r"no `assemblies\.exposed_floor` in the side-car"):
         r = loads.heating_load(env, parsed)
     area = sum(s.area_ft2 for s in exposed)
     assert abs(r.by_category["exposed_floor"]
