@@ -97,16 +97,22 @@ def main(argv=None):
                       help="list the model's walls + boundaries for hand-tagging, instead of the report")
     mode.add_argument("--overview", action="store_true",
                       help="render the full narrative demo overview instead of the terse report")
+    mode.add_argument("--json", action="store_true", dest="as_json",
+                      help="emit the analysis as structured JSON instead of the report")
     args = ap.parse_args(argv)
     if args.walls:
         print(list_walls(args.home, args.sidecar))
         return
     if args.sidecar is None:
-        ap.error("a side-car is required — `eldr <home> <sidecar>` (for the report or --overview); "
-                 "use --walls to inspect walls without one")
+        ap.error("a side-car is required — `eldr <home> <sidecar>` (for the report, --overview, "
+                 "or --json); use --walls to inspect walls without one")
     if args.overview:
         from eldr import overview   # lazy: overview imports cli
         print(overview.render_overview(args.home, args.sidecar))
+        return
+    if args.as_json:
+        from eldr import jsonexport
+        print(jsonexport.render_json(analyze(args.home, args.sidecar)))
         return
     print(run(args.home, args.sidecar))
 
