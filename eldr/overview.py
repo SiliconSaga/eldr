@@ -84,6 +84,15 @@ def _honesty(a) -> str:
         bullets.append(f"**Buffer walls** use a flat {loads.BUFFER_FACTOR:.0%} of the design "
                        "ΔT (one factor for all buffers) and a whole-wall tag — no partial "
                        "height/length split yet.")
+    borrowed = sorted({s.category for s in a.env.surfaces
+                       if loads.assembly_borrow(s.category, a.sc.assemblies) is not None})
+    if borrowed:
+        verb = "has" if len(borrowed) == 1 else "have"
+        bullets.append("**Some U-values are borrowed, not declared** — "
+                       + ", ".join(f"`{c}`" for c in borrowed)
+                       + f" {verb} no `assemblies` entry and stand in on a related "
+                       "assembly's number; the *Borrowed assembly U-values* table above "
+                       "names each donor and how far off it can be.")
     if a.env.level_heights_ft:
         bullets.append("**Storey heights are whatever the model says** — Sweet Home 3D gives "
                        "each level a default height, and a level nobody re-measured looks "
@@ -96,7 +105,7 @@ def _honesty(a) -> str:
                        "the *Buffer spaces* table above prints the factor and temperature "
                        "each surface actually got.")
     if a.env.voids:
-        bullets.append(f"**{sum(a.env.voids.values()):,.0f} sqft of conditioned floor has no "
+        bullets.append(f"**{sum(a.env.voids.values()):,.1f} ft² of conditioned floor has no "
                        "level drawn beneath it** — modeled as buffer floor over undrawn "
                        "space. That is a gap in the drawing, not a measurement; draw those "
                        "spaces and the assumption is replaced by geometry.")

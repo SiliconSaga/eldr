@@ -183,13 +183,40 @@ def _row(md, first_cell):
 
 
 def test_report_warns_about_void_floor_area_by_room():
-    env = _env(voids={"Main Bed": 120.1, "Kitchen": 12.8})
+    # Insertion order is deliberately area-ASCENDING, so it fights the ranking assertion
+    # below. With the rooms the other way round (as they first arrived here) a plain
+    # `for name, area in env.voids.items()` passes the ordering check by coincidence.
+    env = _env(voids={"Kitchen": 12.8, "Main Bed": 120.1})
     md = report.render_heating(_result(), _sc(), env=env)
     assert "no level drawn beneath" in md
     assert "Main Bed" in md and "120.1" in md
     assert "132.9" in md                      # the total, thousands-separated if needed
     # ranked by area, biggest first — not model/dict order
     assert md.index("Main Bed") < md.index("Kitchen")
+
+
+def test_report_void_callout_lists_only_the_largest_rooms_and_counts_the_rest():
+    """"Largest:" must mean it. Listing every room makes the label a lie on a real model."""
+    env = _env(voids={"A": 1.0, "B": 2.0, "C": 3.0, "D": 4.0, "E": 5.0})
+    md = report.render_heating(_result(), _sc(), env=env)
+    callout = next(l for l in md.splitlines() if l.startswith("- Largest"))
+    assert "3 of 5 rooms" in callout
+    assert "E" in callout and "D" in callout and "C" in callout
+    assert " A " not in callout and " B " not in callout
+    assert "15.0 ft²" in md                   # the total still counts all five
+
+
+def test_report_void_callout_uses_real_line_breaks_not_lazy_continuation():
+    """Two-space-indented follow-on lines are Markdown lazy continuation: they render as
+    one run-on paragraph, so the callout a reader sees is not the callout in the source."""
+    env = _env(voids={"Main Bed": 120.1})
+    md = report.render_heating(_result(), _sc(), env=env)
+    assert "### Schematic gaps" in md         # its own heading, like its sibling blocks
+    lines = md.splitlines()
+    i = next(n for n, l in enumerate(lines) if l.startswith("⚠ **"))
+    assert lines[i + 1] == ""                 # blank line closes the paragraph
+    assert lines[i + 2].startswith("- ")      # a real list item, not a two-space indent
+    assert lines[i + 3].startswith("- ")
 
 
 def test_report_omits_the_void_warning_when_there_are_none():
@@ -211,8 +238,8 @@ def test_report_echoes_buffer_space_factors():
     assert "0.67" in md          # (70-32)/(70-13), rounded for display
     # and it is the WINTER cell that carries them, not some other 0.67 in the document
     cells = _row(md, "crawlspace")
-    assert cells[2] == "0.67 × ΔT"
-    assert "32°F" in cells[3] and "winter_temp_f" in cells[3]
+    assert cells[2] == "0.67 → 38.0°F"        # the factor AND the ΔT it resolves to
+    assert "32.0°F" in cells[3] and "winter_temp_f" in cells[3]
 
 
 def test_report_echoes_level_heights():
@@ -234,9 +261,20 @@ def test_report_renders_the_cooling_factor_the_engine_applied_not_the_declared_o
     env = _env(surfaces=[geometry.Surface("ceiling", 100.0, "attic")])
     md = report.render_heating(_result(), _sc_attic(attic_temp_f=130.0), env=env)
     cells = _row(md, "attic")
-    assert cells[2] == "0.50 × ΔT"          # winter: the declared policy, correctly
-    assert cells[4] == "3.44 × ΔT"          # summer: what loads.py actually applied
+    assert cells[2] == "0.50 → 25.0°F"       # winter: the declared policy, correctly
+    assert cells[4] == "3.44 → 55.0°F"       # summer: what loads.py actually applied
     assert "130" in cells[5] and "attic_temp_f" in cells[5]
+
+
+def test_report_names_each_seasons_delta_t_in_the_column_header():
+    """The two ΔTs differ by 3.4x and this block renders BEFORE the cooling section, so
+    a bare "× ΔT" sends a reader to the heating ΔT in the header: 3.66 × 55 = 201°F
+    instead of 58.5°F. Each column names its own, and each cell resolves it."""
+    env = _env(surfaces=[geometry.Surface("ceiling", 100.0, "attic")])
+    md = report.render_heating(_result(), _sc_attic(), env=env)
+    header = next(l for l in md.splitlines() if l.startswith("| Space |"))
+    assert "of 50°F ΔT" in header            # heating: 70 - 20
+    assert "of 16°F ΔT" in header            # cooling: 91 - 75
 
 
 def test_report_names_the_attic_temperature_and_calls_the_estimate_an_estimate():
@@ -245,9 +283,19 @@ def test_report_names_the_attic_temperature_and_calls_the_estimate_an_estimate()
     env = _env(surfaces=[geometry.Surface("ceiling", 100.0, "attic")])
     md = report.render_heating(_result(), _sc_attic(), env=env)
     cells = _row(md, "attic")
-    assert cells[4] == "3.66 × ΔT"          # (133.5-75)/16, the sol-air estimate
+    assert cells[4] == "3.66 → 58.5°F"      # (133.5-75)/16, the sol-air estimate
     assert "133.5" in cells[5]
     assert "sol-air" in cells[5]
+
+
+def test_report_marks_the_vented_shorthand_as_a_winter_rung_reused_for_summer():
+    """`vented`/`factor` are documented WINTER shorthands. Echoing one bare in the summer
+    column reads as a summer observation the modeler never made."""
+    env = _env(surfaces=[geometry.Surface("buffer_floor", 100.0, "crawlspace")])
+    md = report.render_heating(_result(), _sc_attic(), env=env)
+    cells = _row(md, "crawlspace")
+    assert "winter shorthand, reused for summer" in cells[5]
+    assert "winter shorthand" not in cells[3]      # the winter column is not "reused"
 
 
 def test_report_buffer_block_survives_a_heating_only_side_car():
@@ -256,9 +304,24 @@ def test_report_buffer_block_survives_a_heating_only_side_car():
     env = _env(surfaces=[geometry.Surface("ceiling", 100.0, "attic"),
                          geometry.Surface("buffer_floor", 100.0, "crawlspace")])
     md = report.render_heating(_result(), _sc(), env=env)
-    assert _row(md, "attic")[2] == "0.50 × ΔT"
+    assert _row(md, "attic")[2] == "0.50 → 25.0°F"
     assert _row(md, "attic")[4] == "—"
     assert _row(md, "crawlspace")[4] == "—"
+    assert _row(md, "attic")[5] == "no `cooling` block in the side-car"
+
+
+def test_report_says_which_reason_left_the_summer_column_empty():
+    """"no cooling block" also fired when a block existed with an unresolved outdoor
+    temp — unreachable through `cli.run`, wrong for a direct `render_heating` caller."""
+    sc = sidecar.SideCar(
+        assemblies={"exterior_wall": 0.1},
+        design=sidecar.DesignConditions(70, 20, 50),
+        infiltration_ach=0.5,
+        cooling=sidecar.Cooling(indoor_f=75, outdoor_1_f=None, shgc=0.35, occupants=3),
+    )
+    env = _env(surfaces=[geometry.Surface("ceiling", 100.0, "attic")])
+    md = report.render_heating(_result(), sc, env=env)
+    assert _row(md, "attic")[5] == "`cooling.outdoor_1_f` unresolved"
 
 
 def test_report_omits_the_buffer_space_block_when_no_surface_faces_one():
@@ -294,4 +357,52 @@ def test_report_renders_none_of_the_assumption_blocks_without_an_envelope():
     md = report.render_heating(_result(), _sc())
     assert "Level heights" not in md
     assert "Buffer spaces" not in md
+    assert "Borrowed assembly" not in md
     assert "no level drawn beneath" not in md
+
+
+def test_report_discloses_a_borrowed_assembly_u_value_and_its_donor():
+    """The bigger of the two errors over a void floor is the U-value, not the geometry:
+    `buffer_floor` with no entry borrows the slab's effective whole-area number. Until
+    now that was a stderr warning and never reached the document at all.
+    """
+    sc = sidecar.SideCar(
+        assemblies={"exterior_wall": 0.1, "floor": 0.05},
+        design=sidecar.DesignConditions(70, 20, 50),
+        infiltration_ach=0.5,
+    )
+    env = _env(surfaces=[geometry.Surface("buffer_floor", 149.5, "crawlspace"),
+                         geometry.Surface("exterior_wall", 800.0)])
+    md = report.render_heating(_result(), sc, env=env)
+    cells = _row(md, "`buffer_floor`")
+    assert cells[2] == "149.5 ft²"                    # the area standing on the stand-in
+    assert cells[3] == "0.05"                         # the borrowed number itself
+    assert "`assemblies.floor`" in cells[4]           # the donor, named
+    assert "order of magnitude" in cells[5]           # loads.py's own severity wording
+    # a declared category must NOT appear — only borrows do
+    assert "`exterior_wall`" not in md.split("### Borrowed assembly U-values")[1]
+
+
+def test_report_sums_the_area_of_every_surface_sharing_a_borrowed_category():
+    """One row per category, not per surface: the reader wants the exposure, not a list."""
+    sc = sidecar.SideCar(
+        assemblies={"exterior_wall": 0.1, "floor": 0.05},
+        design=sidecar.DesignConditions(70, 20, 50),
+        infiltration_ach=0.5,
+    )
+    env = _env(surfaces=[geometry.Surface("buffer_floor", 100.0, "crawlspace"),
+                         geometry.Surface("buffer_floor", 49.5, "garage")])
+    md = report.render_heating(_result(), sc, env=env)
+    assert len([l for l in md.splitlines() if l.startswith("| `buffer_floor` |")]) == 1
+    assert _row(md, "`buffer_floor`")[2] == "149.5 ft²"
+
+
+def test_report_omits_the_borrow_block_when_every_assembly_is_declared():
+    sc = sidecar.SideCar(
+        assemblies={"exterior_wall": 0.1, "buffer_floor": 0.08, "floor": 0.05},
+        design=sidecar.DesignConditions(70, 20, 50),
+        infiltration_ach=0.5,
+    )
+    env = _env(surfaces=[geometry.Surface("buffer_floor", 149.5, "crawlspace")])
+    md = report.render_heating(_result(), sc, env=env)
+    assert "Borrowed assembly" not in md

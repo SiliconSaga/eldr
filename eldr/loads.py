@@ -110,6 +110,34 @@ def _conduction(surfaces, assemblies, dt_for):
     return total, by_category
 
 
+@dataclass(frozen=True)
+class AssemblyBorrow:
+    """A U-value a surface category had to borrow because the side-car declares none."""
+    category: str          # the recipient — what the surface actually is
+    donor: str             # the assembly whose U-value stood in for it
+    u_value: float         # the borrowed number
+    note: str              # how wrong this particular pairing can be
+
+
+def assembly_borrow(category: str, assemblies: dict[str, float]) -> AssemblyBorrow | None:
+    """The borrow `_u_value` would make for `category`, or None if it needs none.
+
+    The single resolution point for the fallback chain, shared by the runtime warning and
+    by the report's disclosure. A consumer re-walking `_U_FALLBACKS` itself would be one
+    more copy of a rule that has already changed twice — and a report describing a borrow
+    the engine did not make is the same class of bug as a report describing a cooling
+    factor the engine did not apply.
+    """
+    if category in assemblies:
+        return None
+    for alt in _U_FALLBACKS.get(category, ()):
+        if alt in assemblies:
+            return AssemblyBorrow(
+                category=category, donor=alt, u_value=assemblies[alt],
+                note=_BORROW_SEVERITY.get((category, alt), _BORROW_SEVERITY_DEFAULT))
+    return None
+
+
 def _u_value(category, assemblies):
     """U-value for a surface category, borrowing a related assembly when unset.
 
@@ -122,19 +150,19 @@ def _u_value(category, assemblies):
     """
     if category in assemblies:
         return assemblies[category]
-    for alt in _U_FALLBACKS.get(category, ()):
-        if alt in assemblies:
-            note = _BORROW_SEVERITY.get((category, alt), _BORROW_SEVERITY_DEFAULT)
-            # stacklevel=4 lands on the *caller's* line: this frame, then `_conduction`,
-            # then the public entry point (heating_load / cooling_load / per_room_loads —
-            # every `_conduction` call site is one of those three, so the depth is
-            # uniform). geometry.py's warns use stacklevel=2 for the same reason; they
-            # just sit one frame below their public API instead of three.
-            warnings.warn(
-                f"no `assemblies.{category}` in the side-car — borrowing "
-                f"`{alt}`'s U-value ({assemblies[alt]}) as a stand-in ({note}); "
-                f"declare `assemblies.{category}` for a real number.", stacklevel=4)
-            return assemblies[alt]
+    borrow = assembly_borrow(category, assemblies)
+    if borrow is not None:
+        # stacklevel=4 lands on the *caller's* line: this frame, then `_conduction`,
+        # then the public entry point (heating_load / cooling_load / per_room_loads —
+        # every `_conduction` call site is one of those three, so the depth is
+        # uniform). geometry.py's warns use stacklevel=2 for the same reason; they
+        # just sit one frame below their public API instead of three.
+        warnings.warn(
+            f"no `assemblies.{borrow.category}` in the side-car — borrowing "
+            f"`{borrow.donor}`'s U-value ({borrow.u_value}) as a stand-in "
+            f"({borrow.note}); declare `assemblies.{borrow.category}` for a real number.",
+            stacklevel=4)
+        return borrow.u_value
     raise KeyError(f"no assembly U-value for category '{category}' in side-car")
 
 

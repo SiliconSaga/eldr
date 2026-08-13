@@ -113,8 +113,8 @@ def test_overview_mirrors_the_level_and_space_assumptions(tmp_path):
     assert "Buffer spaces" in md
     # sol-air 132.5°F against the 15°F cooling ΔT -> 3.83, NOT the declared default's 0.50
     attic = _row(md, "attic")
-    assert attic[2] == "0.50 × ΔT"
-    assert attic[4] == "3.83 × ΔT"
+    assert attic[2] == "0.50 → 27.5°F"       # 55°F heating ΔT
+    assert attic[4] == "3.83 → 57.5°F"       # 15°F cooling ΔT — not 3.83 x 55
     assert "132.5" in attic[5] and "sol-air" in attic[5]
 
 
@@ -126,6 +126,9 @@ def test_overview_carries_the_void_warning_into_both_report_and_caveats(tmp_path
     assert "Great Room" in md
     honesty = md.split("## What's demo-grade today")[1]
     assert "drawn beneath" in honesty
+    # the void floor's U-value is borrowed too, and that is the larger of the two errors
+    assert "### Borrowed assembly U-values" in md
+    assert "borrowed, not declared" in honesty and "`buffer_floor`" in honesty
 
 
 def test_overview_omits_the_void_caveat_when_the_model_has_no_gap(tmp_path):

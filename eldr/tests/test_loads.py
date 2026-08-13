@@ -535,6 +535,31 @@ def test_buffer_floor_u_falls_back_through_exposed_floor_to_floor():
     assert abs(res.conduction_btuh - 0.02 * 100.0 * dt) < 1e-6
 
 
+def test_assembly_borrow_reports_the_same_decision_the_engine_makes():
+    """The report renders borrows; `_u_value` applies them. One resolver, or they drift.
+
+    `buffer_floor` falls back through `exposed_floor` BEFORE `floor`, so a fixture that
+    declares only `floor` cannot tell a correct chain walk from one that stops at the
+    first entry it finds. Both donors are present here and the nearer one must win.
+    """
+    assemblies = {"floor": 0.05, "exposed_floor": 0.09}
+    borrow = loads.assembly_borrow("buffer_floor", assemblies)
+    assert borrow.donor == "exposed_floor" and borrow.u_value == 0.09
+    assert "framed floors" in borrow.note                  # the pair-specific severity
+    # and the number it reports is the one the engine actually loads at
+    env = _envelope([geometry.Surface("buffer_floor", 100.0, "crawlspace")])
+    sc = _sidecar(assemblies=assemblies)
+    with pytest.warns(UserWarning):
+        res = loads.heating_load(env, sc)
+    assert res.conduction_btuh == pytest.approx(
+        borrow.u_value * 100.0 * sc.design.heating_delta_t * spaces.UNVENTED_FACTOR)
+
+
+def test_assembly_borrow_is_none_when_declared_or_unborrowable():
+    assert loads.assembly_borrow("buffer_floor", {"buffer_floor": 0.08}) is None
+    assert loads.assembly_borrow("window", {"floor": 0.05}) is None   # no fallback chain
+
+
 def test_borrowing_an_assembly_u_warns_naming_both_categories():
     """A borrow is a stand-in, not a measurement, and must never be silent."""
     env = _envelope([geometry.Surface("buffer_floor", 100.0, "crawlspace")])

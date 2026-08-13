@@ -68,11 +68,13 @@ def render_heating(result: loads.HeatingResult, sc: sidecar.SideCar,
 def _assumptions_section(env: geometry_mod.Envelope, sc: sidecar.SideCar) -> list[str]:
     """The assumptions the numbers above are standing on, echoed back.
 
-    Three things the engine decided quietly and the reader cannot otherwise see: the
+    Four things the engine decided quietly and the reader cannot otherwise see: the
     storey height each level was given, the ΔT fraction each buffer space resolved to,
-    and any floor area modeled over a space nobody drew.
+    any U-value that had to be borrowed from a related assembly, and any floor area
+    modeled over a space nobody drew.
     """
-    blocks = _levels_block(env, sc) + _spaces_block(env, sc) + _voids_block(env)
+    blocks = (_levels_block(env, sc) + _spaces_block(env, sc)
+              + _borrows_block(env, sc) + _voids_block(env))
     if not blocks:
         return []
     return ["", "## Assumptions behind these numbers"] + blocks
@@ -99,9 +101,12 @@ def _levels_block(env: geometry_mod.Envelope, sc: sidecar.SideCar) -> list[str]:
     lines += [
         "",
         f"_Total conditioned volume **{env.volume_ft3:,.0f} ft³** — the infiltration "
-        f"basis. A level contributing 0 ft³ holds no conditioned rooms (garage, "
-        f"crawlspace, joist space) and is excluded on purpose. Set "
-        f"`levels.<name>.height_ft` to correct a height Sweet Home 3D defaulted._",
+        f"basis. Set `levels.<name>.height_ft` to correct a height Sweet Home 3D "
+        f"defaulted. A level contributing 0 ft³ added nothing to that total; usually that "
+        f"is deliberate (it holds no conditioned rooms — garage, crawlspace, joist "
+        f"space), but it is not the only cause: the volume is accumulated while walking "
+        f"each level's walls, so a level with rooms and no walls drawn is skipped and "
+        f"reads 0 ft³ here too._",
     ]
     return lines
 
@@ -118,12 +123,23 @@ def _spaces_block(env: geometry_mod.Envelope, sc: sidecar.SideCar) -> list[str]:
     if not names:
         return []
     d = sc.design
+    winter_dt = d.heating_delta_t
     indoor_w = d.indoor_heating_f
-    outdoor_w = indoor_w - d.heating_delta_t
+    outdoor_w = indoor_w - winter_dt
     c = sc.cooling
     summer = c is not None and c.outdoor_1_f is not None
+    # The two ΔTs differ by several times (55°F vs 16°F on Refrhus), and this block is
+    # rendered BEFORE the cooling section — so at "3.66 × ΔT" the only ΔT the reader has
+    # met is the heating one in the header, and 3.66 × 55 = 201°F. Both columns name
+    # their own ΔT, and each cell resolves the multiplication itself.
+    summer_dt = c.cooling_delta_t if summer else None
+    summer_header = ("Summer factor" if summer_dt is None
+                     else f"Summer factor (of {summer_dt:.0f}°F ΔT)")
+    no_summer = ("no `cooling` block in the side-car" if c is None
+                 else "`cooling.outdoor_1_f` unresolved")
     lines = ["", "### Buffer spaces", "",
-             "| Space | Winter factor | Winter input | Summer factor | Summer input |",
+             f"| Space | Winter factor (of {winter_dt:.0f}°F ΔT) | Winter input "
+             f"| {summer_header} | Summer input |",
              "|---|---:|---|---:|---|"]
     for name in names:
         policy = spaces_mod.policy_for(name, sc.spaces)
@@ -134,17 +150,18 @@ def _spaces_block(env: geometry_mod.Envelope, sc: sidecar.SideCar) -> list[str]:
         if summer:
             effective = loads.effective_cooling_policy(name, policy, c)
             factor = spaces_mod.cooling_factor(effective, c.indoor_f, c.outdoor_1_f)
-            summer_cell = f"{factor:.2f} × ΔT"
+            summer_cell = f"{factor:.2f} → {factor * summer_dt:.1f}°F"
             summer_input = _summer_input(policy, effective, c, origin)
         else:
-            summer_cell, summer_input = "—", "no `cooling` block"
-        lines.append(f"| {name} | {winter:.2f} × ΔT | {_winter_input(policy, origin)} "
-                     f"| {summer_cell} | {summer_input} |")
+            summer_cell, summer_input = "—", no_summer
+        lines.append(f"| {name} | {winter:.2f} → {winter * winter_dt:.1f}°F "
+                     f"| {_winter_input(policy, origin)} | {summer_cell} | {summer_input} |")
     lines += [
         "",
-        "_A surface facing a buffer space sees this fraction of the design ΔT rather than "
-        "all of it. A factor above 1 is not a bug: a sun-heated attic runs hotter than "
-        "outdoor air, so the ceiling beneath it sees a larger ΔT than an exterior wall._",
+        "_A surface facing a buffer space sees the ΔT shown, not the whole design ΔT; the "
+        "arrow resolves the factor against that season's own design ΔT. A factor above 1 "
+        "is not a bug: a sun-heated attic runs hotter than outdoor air, so the ceiling "
+        "beneath it sees a larger ΔT than an exterior wall does._",
     ]
     return lines
 
@@ -152,7 +169,7 @@ def _spaces_block(env: geometry_mod.Envelope, sc: sidecar.SideCar) -> list[str]:
 def _winter_input(policy: spaces_mod.SpacePolicy, origin: str) -> str:
     """Which of the precedence rungs the winter factor actually came from."""
     if policy.winter_temp_f is not None:
-        return f"`winter_temp_f` {policy.winter_temp_f:.0f}°F ({origin})"
+        return f"`winter_temp_f` {policy.winter_temp_f:.1f}°F ({origin})"
     if policy.factor is not None:
         return f"`factor` {policy.factor:.2f} ({origin})"
     if policy.vented is not None:
@@ -177,11 +194,55 @@ def _summer_input(policy: spaces_mod.SpacePolicy, effective: spaces_mod.SpacePol
         return (f"sol-air estimate {effective.summer_temp_f:.1f}°F attic air "
                 f"(outdoor {c.outdoor_1_f:.0f}°F + {uplift:.1f}°F roof gain) — "
                 f"set `cooling.attic_temp_f` to replace it")
+    # `factor` and `vented` are documented WINTER shorthands (see spaces.py). The engine
+    # reusing them for summer is deliberate, but a cell that just echoes `vented: false`
+    # invites the reader to think a summer observation was made. Say which it is.
     if policy.factor is not None:
-        return f"`factor` {policy.factor:.2f} ({origin})"
+        return f"`factor` {policy.factor:.2f} ({origin}) — winter shorthand, reused for summer"
     if policy.vented is not None:
-        return f"`vented: {str(policy.vented).lower()}` ({origin})"
-    return f"unvented fallback {spaces_mod.UNVENTED_FACTOR:.2f} ({origin})"
+        return (f"`vented: {str(policy.vented).lower()}` ({origin}) — winter shorthand, "
+                f"reused for summer")
+    return (f"unvented fallback {spaces_mod.UNVENTED_FACTOR:.2f} ({origin}) — winter "
+            f"shorthand, reused for summer")
+
+
+def _borrows_block(env: geometry_mod.Envelope, sc: sidecar.SideCar) -> list[str]:
+    """U-values the engine had to borrow from a related assembly, and from what.
+
+    Until now a borrow existed only as a Python warning on stderr, so it never reached
+    the document. On Refrhus that hid the LARGER of the two errors over the same void
+    floor: the geometry gap is disclosed below, while the U-value standing in for it is
+    a slab's effective whole-area number, an order of magnitude off a framed floor.
+    """
+    borrows: dict[str, tuple[loads.AssemblyBorrow, float]] = {}
+    for s in env.surfaces:
+        if s.category in borrows:
+            borrows[s.category] = (borrows[s.category][0],
+                                   borrows[s.category][1] + s.area_ft2)
+            continue
+        borrow = loads.assembly_borrow(s.category, sc.assemblies)
+        if borrow is not None:
+            borrows[s.category] = (borrow, s.area_ft2)
+    if not borrows:
+        return []
+    lines = ["", "### Borrowed assembly U-values", "",
+             "| Category | Area | U used | Borrowed from | Why that is a stand-in |",
+             "|---|---:|---:|---|---|"]
+    for category in sorted(borrows):
+        borrow, area_ft2 = borrows[category]
+        lines.append(f"| `{category}` | {area_ft2:,.1f} ft² | {borrow.u_value:g} "
+                     f"| `assemblies.{borrow.donor}` | {borrow.note} |")
+    lines += [
+        "",
+        "_These surfaces are loaded at a number nobody measured for them. A borrow keeps "
+        "the engine usable on a side-car written before the category existed, but it is a "
+        "stand-in: declare `assemblies.<category>` to replace it with a real value._",
+    ]
+    return lines
+
+
+# How many void rooms the callout names before it stops listing and starts counting.
+_VOID_TOP_N = 3
 
 
 def _voids_block(env: geometry_mod.Envelope) -> list[str]:
@@ -189,14 +250,21 @@ def _voids_block(env: geometry_mod.Envelope) -> list[str]:
     if not env.voids:
         return []
     ranked = sorted(env.voids.items(), key=lambda kv: kv[1], reverse=True)
-    largest = ", ".join(f"{name} {area:,.1f} sqft" for name, area in ranked)
+    shown = ranked[:_VOID_TOP_N]
+    largest = ", ".join(f"{name} {area:,.1f} ft²" for name, area in shown)
+    of_n = f" ({len(shown)} of {len(ranked)} rooms)" if len(ranked) > len(shown) else ""
     return [
         "",
-        f"⚠ **{sum(env.voids.values()):,.1f} sqft of conditioned floor has no level drawn "
+        "### Schematic gaps",
+        "",
+        f"⚠ **{sum(env.voids.values()):,.1f} ft² of conditioned floor has no level drawn "
         f"beneath it** — modeled as buffer floor over the undrawn space below "
         f"(`crawlspace`, unless a level's `below_void` names another).",
-        f"  Largest: {largest}.",
-        "  Draw those spaces in Sweet Home 3D to replace the assumption with geometry.",
+        "",
+        # Bullets, not indented continuation lines: two-space indents are Markdown lazy
+        # continuation and collapse the whole callout into one run-on paragraph.
+        f"- Largest{of_n}: {largest}.",
+        "- Draw those spaces in Sweet Home 3D to replace the assumption with geometry.",
     ]
 
 
