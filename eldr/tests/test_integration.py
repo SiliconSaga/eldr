@@ -181,9 +181,12 @@ def test_buffer_floor_without_an_assembly_borrows_the_floor_u(tmp_path):
 
 
 def test_buffer_floor_is_actually_what_that_model_produces(tmp_path):
-    """Guards the test above from rotting into a pass for the wrong reason: if the
-    geometry stopped emitting `buffer_floor`, the KeyError test would still 'pass' on
-    some other missing category."""
+    """Pins the precondition the test above depends on but cannot itself check.
+
+    That test's expected ΔT is the *garage's* unvented default, which only holds because
+    these surfaces carry `space == "garage"`. If the resolver kept emitting `buffer_floor`
+    but attributed it to a different space — or to none — the expectation there would
+    silently start describing the wrong physics. This keeps the attribution honest."""
     from eldr import geometry
     home = tmp_path / "Home.xml"
     home.write_text(FIXTURE_OVER_GARAGE)

@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 import bisect
+import warnings
 from eldr import geometry, sidecar, spaces, units
 
 # Peak solar heat gain (BTU/hr per ft^2 of glass) at the four cardinal facings;
@@ -33,7 +34,9 @@ BUFFER_WALL_CATEGORY = "buffer_wall"
 BUFFER_FACTOR = spaces.UNVENTED_FACTOR
 # =====================================================================
 
-# Surfaces whose U-value may borrow a related category's assembly when unset.
+# Surfaces whose U-value may borrow a related category's assembly when unset. The chain
+# keeps the engine usable on a side-car written before these categories existed, but a
+# borrow is a STAND-IN, not a measurement, and every one of them warns — see `_u_value`.
 _U_FALLBACKS = {
     BUFFER_WALL_CATEGORY: ("exterior_wall",),
     "buffer_floor": ("exposed_floor", "floor"),
@@ -89,11 +92,24 @@ def _conduction(surfaces, assemblies, dt_for):
 
 
 def _u_value(category, assemblies):
-    """U-value for a surface category, borrowing a related assembly when unset."""
+    """U-value for a surface category, borrowing a related assembly when unset.
+
+    A borrow is announced, never silent. The categories are related but not
+    interchangeable, and the gap can be an order of magnitude: `floor` in a typical
+    side-car is a slab's *effective* U (the real loss is perimeter-edge, so the
+    whole-area number is deliberately tiny), while a framed `buffer_floor` over a
+    crawlspace is a genuine assembly measured many times higher. Borrowing turns a loud
+    failure into a confident wrong number, so the warning is what keeps it honest.
+    """
     if category in assemblies:
         return assemblies[category]
     for alt in _U_FALLBACKS.get(category, ()):
         if alt in assemblies:
+            warnings.warn(
+                f"no `assemblies.{category}` in the side-car — borrowing "
+                f"`{alt}`'s U-value ({assemblies[alt]}) as a stand-in. These assemblies "
+                f"are related but not equivalent and can differ by an order of "
+                f"magnitude; declare `assemblies.{category}` for a real number.")
             return assemblies[alt]
     raise KeyError(f"no assembly U-value for category '{category}' in side-car")
 

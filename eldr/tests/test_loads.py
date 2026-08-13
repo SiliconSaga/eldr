@@ -273,11 +273,97 @@ def test_vented_attic_restores_full_outdoor_delta_t():
     assert abs(res.conduction_btuh - 0.03 * 100.0 * sc.design.heating_delta_t) < 1e-6
 
 
+def _cooling(indoor_f=75, outdoor_1_f=95, shgc=0.4, occupants=0):
+    return sidecar.Cooling(indoor_f=indoor_f, outdoor_1_f=outdoor_1_f,
+                           shgc=shgc, occupants=occupants)
+
+
+def test_cooling_ceiling_uses_the_attic_policy_and_may_exceed_outdoor_delta_t():
+    """The cooling mirror of the attic test, and the design's headline cooling feature.
+
+    A sun-loaded attic runs HOTTER than outdoor air, so its factor is deliberately not
+    clamped at 1 and the ceiling sees a LARGER ΔT than the outdoor design one. Asserting
+    the exact value also pins that the cooling resolver calls `spaces.cooling_factor` and
+    not its two-lines-away twin `heating_factor` — which reads `winter_temp_f`, finds
+    none here, and would silently fall back to the flat unvented 0.5.
+    """
+    env = _envelope([geometry.Surface("ceiling", 100.0, "attic")])
+    sc = _sidecar(assemblies={"ceiling": 0.03},
+                  spaces={"attic": spaces.SpacePolicy("attic", summer_temp_f=130.0)},
+                  cooling=_cooling())
+    air = sc.cooling.cooling_delta_t                       # 95 - 75 = 20
+    factor = (130.0 - 75.0) / air                          # 2.75 — above 1, on purpose
+    assert factor > 1.0
+    res = loads.cooling_load(env, sc)
+    assert abs(res.by_category["ceiling"] - 0.03 * 100.0 * air * factor) < 1e-6
+    # and it is strictly more than the plain outdoor ΔT would give
+    assert res.by_category["ceiling"] > 0.03 * 100.0 * air
+
+
+def test_cooling_buffer_floor_uses_its_space_policy():
+    """Cooling counterpart of the heating per-space test: same category, two spaces."""
+    env = _envelope([geometry.Surface("buffer_floor", 100.0, "crawlspace"),
+                     geometry.Surface("buffer_floor", 100.0, "garage")])
+    sc = _sidecar(assemblies={"buffer_floor": 0.5},
+                  spaces={"crawlspace": spaces.SpacePolicy("crawlspace", summer_temp_f=90.0),
+                          "garage": spaces.SpacePolicy("garage", factor=0.25)},
+                  cooling=_cooling())
+    air = sc.cooling.cooling_delta_t                       # 95 - 75 = 20
+    # 0.75 is deliberately not 0.5: reading `winter_temp_f` instead would find none and
+    # fall back to the flat unvented default, so this also catches the factor-fn swap.
+    expected = (0.5 * 100.0 * air * 0.75                   # crawl at 90°F -> (90-75)/20
+                + 0.5 * 100.0 * air * 0.25)                # garage's declared factor
+    res = loads.cooling_load(env, sc)
+    assert abs(res.by_category["buffer_floor"] - expected) < 1e-6
+
+
+def test_cooling_surface_without_space_keeps_the_plain_outdoor_delta_t():
+    env = _envelope([geometry.Surface("exterior_wall", 100.0)])
+    sc = _sidecar(assemblies={"exterior_wall": 0.08}, cooling=_cooling())
+    res = loads.cooling_load(env, sc)
+    assert abs(res.by_category["exterior_wall"] - 0.08 * 100.0 * sc.cooling.cooling_delta_t) < 1e-6
+
+
+def test_buffer_floor_u_prefers_exposed_floor_over_floor():
+    """The chain is ordered, not a set: with both declared, the nearer relative wins."""
+    env = _envelope([geometry.Surface("buffer_floor", 100.0, "crawlspace")])
+    sc = _sidecar(assemblies={"exposed_floor": 0.07, "floor": 0.02})   # no buffer_floor
+    with pytest.warns(UserWarning, match="exposed_floor"):
+        res = loads.heating_load(env, sc)
+    dt = sc.design.heating_delta_t * spaces.UNVENTED_FACTOR
+    assert abs(res.conduction_btuh - 0.07 * 100.0 * dt) < 1e-6         # not floor's 0.02
+
+
 def test_buffer_floor_u_falls_back_through_exposed_floor_to_floor():
+    """The far end of the chain — what this project's own Refrhus side-car actually hits."""
     env = _envelope([geometry.Surface("buffer_floor", 100.0, "crawlspace")])
     sc = _sidecar(assemblies={"floor": 0.02})     # neither buffer_floor nor exposed_floor
-    res = loads.heating_load(env, sc)
-    assert res.conduction_btuh > 0.0
+    with pytest.warns(UserWarning, match="floor"):
+        res = loads.heating_load(env, sc)
+    dt = sc.design.heating_delta_t * spaces.UNVENTED_FACTOR
+    assert abs(res.conduction_btuh - 0.02 * 100.0 * dt) < 1e-6
+
+
+def test_borrowing_an_assembly_u_warns_naming_both_categories():
+    """A borrow is a stand-in, not a measurement, and must never be silent."""
+    env = _envelope([geometry.Surface("buffer_floor", 100.0, "crawlspace")])
+    sc = _sidecar(assemblies={"floor": 0.02})
+    with pytest.warns(UserWarning) as rec:
+        loads.heating_load(env, sc)
+    msg = str(rec[0].message)
+    assert "buffer_floor" in msg and "floor" in msg        # recipient and donor both named
+
+
+def test_declared_assembly_does_not_warn():
+    """The complement: declaring the assembly borrows nothing, so it must stay quiet."""
+    import warnings as _warnings
+    env = _envelope([geometry.Surface("buffer_floor", 100.0, "crawlspace")])
+    sc = _sidecar(assemblies={"buffer_floor": 0.5, "floor": 0.02})
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("error")               # any warning becomes a failure
+        res = loads.heating_load(env, sc)
+    dt = sc.design.heating_delta_t * spaces.UNVENTED_FACTOR
+    assert abs(res.conduction_btuh - 0.5 * 100.0 * dt) < 1e-6
 
 
 def test_surface_without_space_keeps_the_plain_outdoor_delta_t():

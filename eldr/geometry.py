@@ -608,6 +608,12 @@ def extract_envelope(home_path: str, wall_boundaries: dict[str, str] | None = No
         levels_present = list(level_extent.keys())
         top = max(levels_present, key=level_elev)
         bot = min(levels_present, key=level_elev)
+        # NOTE these carry no `space` (there is no resolver result to name one), so
+        # loads.py gives them the plain outdoor ΔT. A walls-only model therefore loads
+        # its ceiling at the FULL ΔT while the same house drawn with rooms loads it
+        # through the attic policy — half, by default. That fork is deliberate for a
+        # legacy path with no adjacency information to reason from, but it means the two
+        # inputs are not interchangeable: draw rooms before comparing numbers.
         for lid, cat in ((top, "ceiling"), (bot, "floor")):
             minx, maxx, miny, maxy = level_extent[lid]
             surfaces.append(Surface(cat, units.sqcm_to_sqft((maxx - minx) * (maxy - miny))))
@@ -641,6 +647,8 @@ def extract_envelope(home_path: str, wall_boundaries: dict[str, str] | None = No
             # Legacy fallback only (no faces at all): top level gets the ceiling, bottom
             # the floor. With a resolver result, a room absent from `faces` is
             # unconditioned and correctly carries no envelope horizontal.
+            # As with the whole-house fallback above, these carry no `space`, so this
+            # ceiling loads at the full outdoor ΔT rather than through the attic policy.
             if lid == top:
                 surfs.append(Surface("ceiling", rm["area_ft2"]))
             if lid == bot:
