@@ -329,6 +329,28 @@ def test_the_unbound_spaces_warning_reaches_cooling_and_per_room_too():
         loads.per_room_loads(env, sc)
 
 
+def test_the_attic_space_name_and_the_resolvers_above_void_default_agree():
+    """Two independent literals both spelling `"attic"`, with nothing pinning them.
+
+    `stack.resolve_faces` names an undrawn space above a room from its `above_void`
+    default; `loads` recognizes the hot-attic cooling substitution by comparing a
+    surface's space against `ATTIC_SPACE`. The substitution fires only when the two
+    strings match. Change either one — rename the default, or spell `ATTIC_SPACE`
+    differently — and every ceiling in every model silently drops from the sol-air attic
+    temperature to the bare unvented 0.5: on Refrhus, a cooling factor of 3.66 becoming
+    0.50, a 7x error in the branch's marquee number. No exception, no failing test.
+
+    Same shape as the `_VOID_TREATMENT` drift guard in `test_report.py`: two modules hold
+    the same value by copy because there is no natural constant to share, so the copy gets
+    a guard instead. Read off the signature rather than restated here, so the assertion
+    cannot drift away from the default it is guarding.
+    """
+    import inspect
+    from eldr import stack
+    default = inspect.signature(stack.resolve_faces).parameters["above_void"].default
+    assert default == loads.ATTIC_SPACE
+
+
 def test_ceiling_uses_the_attic_policy_not_outdoor_air():
     env = _envelope([geometry.Surface("ceiling", 100.0, "attic")])
     sc = _sidecar(assemblies={"ceiling": 0.03},
