@@ -24,6 +24,19 @@ UNVENTED_FACTOR = 0.5
 # A vented space tracks outdoor air closely enough to load at the full ΔT.
 VENTED_FACTOR = 1.0
 
+# A sun-heated attic runs far above outdoor air. Demo-grade: a flat solar uplift scaled
+# by roof absorptance, NOT a real energy balance (no roof area, ventilation rate or
+# radiant barrier). Dark asphalt shingle ~0.85. Refrhus carries PV over part of its
+# roof, which shades the deck beneath — see the design doc's deferred note; until roof
+# planes are modeled, set cooling.attic_temp_f to a blended observed value instead.
+SOL_AIR_UPLIFT_F = 50.0
+DEFAULT_ROOF_ABSORPTANCE = 0.85
+
+
+def sol_air_attic_temp_f(outdoor_f: float, absorptance: float = DEFAULT_ROOF_ABSORPTANCE) -> float:
+    """Estimated peak attic air temperature from roof solar gain."""
+    return outdoor_f + SOL_AIR_UPLIFT_F * absorptance
+
 
 @dataclass(frozen=True)
 class SpacePolicy:
@@ -38,6 +51,10 @@ class SpacePolicy:
 # or soffit ventilation visible, and it does not get outdoor-cold). NOTE this diverges
 # from typical ACCA practice, which loads a vented attic at full outdoor temperature for
 # heating — declare `vented: true` to restore that. The report echoes which was used.
+# `vented`/`factor` are WINTER shorthands: in summer an attic with no declared
+# `summer_temp_f` is resolved by loads.py to a hot-attic temperature (see
+# `sol_air_attic_temp_f`), because venting lowers a sunlit attic without making it track
+# outdoor air. Declare `summer_temp_f` to override that.
 DEFAULT_POLICIES: dict[str, SpacePolicy] = {
     "attic": SpacePolicy(name="attic", vented=False),
     "crawlspace": SpacePolicy(name="crawlspace", vented=False),

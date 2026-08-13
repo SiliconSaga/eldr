@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 import bisect
+import dataclasses
 import warnings
 from eldr import geometry, sidecar, spaces, units
 
@@ -42,6 +43,24 @@ _U_FALLBACKS = {
     "buffer_floor": ("exposed_floor", "floor"),
     "exposed_floor": ("floor",),
 }
+
+# How wrong a borrow can be, per (recipient, donor) pair — the warning says so rather
+# than repeating one blanket claim. Anything borrowing `floor` is the severe case: a
+# side-car's `floor` is a slab's *effective* whole-area U (deliberately tiny, because the
+# real loss is perimeter-edge), while the borrower is a genuine framed assembly. A buffer
+# wall borrowing an exterior wall is the mild case — same construction, different
+# boundary — so claiming an order of magnitude there would cry wolf.
+_BORROW_SEVERITY = {
+    ("buffer_floor", "floor"): "a slab's effective whole-area U can be an order of "
+                               "magnitude below a framed floor's",
+    ("exposed_floor", "floor"): "a slab's effective whole-area U can be an order of "
+                                "magnitude below a framed floor's",
+    ("buffer_floor", "exposed_floor"): "both are framed floors, but over spaces at "
+                                       "different temperatures",
+    (BUFFER_WALL_CATEGORY, "exterior_wall"): "same construction, different boundary — "
+                                             "usually close, but not measured",
+}
+_BORROW_SEVERITY_DEFAULT = "they are related but not equivalent"
 
 
 @dataclass(frozen=True)
@@ -105,11 +124,16 @@ def _u_value(category, assemblies):
         return assemblies[category]
     for alt in _U_FALLBACKS.get(category, ()):
         if alt in assemblies:
+            note = _BORROW_SEVERITY.get((category, alt), _BORROW_SEVERITY_DEFAULT)
+            # stacklevel=4 lands on the *caller's* line: this frame, then `_conduction`,
+            # then the public entry point (heating_load / cooling_load / per_room_loads —
+            # every `_conduction` call site is one of those three, so the depth is
+            # uniform). geometry.py's warns use stacklevel=2 for the same reason; they
+            # just sit one frame below their public API instead of three.
             warnings.warn(
                 f"no `assemblies.{category}` in the side-car — borrowing "
-                f"`{alt}`'s U-value ({assemblies[alt]}) as a stand-in. These assemblies "
-                f"are related but not equivalent and can differ by an order of "
-                f"magnitude; declare `assemblies.{category}` for a real number.")
+                f"`{alt}`'s U-value ({assemblies[alt]}) as a stand-in ({note}); "
+                f"declare `assemblies.{category}` for a real number.", stacklevel=4)
             return assemblies[alt]
     raise KeyError(f"no assembly U-value for category '{category}' in side-car")
 
@@ -134,7 +158,11 @@ def _heating_dt_for(design, declared_spaces) -> Callable[[geometry.Surface], flo
 
 def _cooling_dt_for(design, cooling, declared_spaces) -> Callable[[geometry.Surface], float]:
     """ΔT resolver for cooling. A space's factor may exceed 1: a sun-heated attic runs
-    hotter than outdoor air, so its ceiling sees a LARGER ΔT than the outdoor design one."""
+    hotter than outdoor air, so its ceiling sees a LARGER ΔT than the outdoor design one.
+
+    Attic temperature precedence, strongest first: an observed `spaces.attic.summer_temp_f`,
+    then the side-car's `cooling.attic_temp_f`, then the sol-air estimate.
+    """
     air = cooling.cooling_delta_t
     ground = max(0.0, design.ground_temp_f - cooling.indoor_f)
     indoor, outdoor = cooling.indoor_f, cooling.indoor_f + air
@@ -144,6 +172,15 @@ def _cooling_dt_for(design, cooling, declared_spaces) -> Callable[[geometry.Surf
             return ground
         if s.space is not None:
             policy = spaces.policy_for(s.space, declared_spaces)
+            # The hot attic. `vented`/`factor` are winter shorthands and both cap the
+            # attic at or below outdoor air, which is backwards for a sunlit summer day
+            # — so unless an observed `summer_temp_f` says otherwise, the attic gets a
+            # real temperature: the side-car's `cooling.attic_temp_f`, else the sol-air
+            # estimate. Only `attic`: a crawlspace or garage sees no roof sun.
+            if s.space == "attic" and policy.summer_temp_f is None:
+                attic_f = (cooling.attic_temp_f if cooling.attic_temp_f is not None
+                           else spaces.sol_air_attic_temp_f(outdoor))
+                policy = dataclasses.replace(policy, summer_temp_f=attic_f)
             return spaces.cooling_factor(policy, indoor, outdoor) * air
         if s.category == BUFFER_WALL_CATEGORY:
             return BUFFER_FACTOR * air

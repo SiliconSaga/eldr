@@ -273,9 +273,9 @@ def test_vented_attic_restores_full_outdoor_delta_t():
     assert abs(res.conduction_btuh - 0.03 * 100.0 * sc.design.heating_delta_t) < 1e-6
 
 
-def _cooling(indoor_f=75, outdoor_1_f=95, shgc=0.4, occupants=0):
+def _cooling(indoor_f=75, outdoor_1_f=95, shgc=0.4, occupants=0, attic_temp_f=None):
     return sidecar.Cooling(indoor_f=indoor_f, outdoor_1_f=outdoor_1_f,
-                           shgc=shgc, occupants=occupants)
+                           shgc=shgc, occupants=occupants, attic_temp_f=attic_temp_f)
 
 
 def test_cooling_ceiling_uses_the_attic_policy_and_may_exceed_outdoor_delta_t():
@@ -298,6 +298,100 @@ def test_cooling_ceiling_uses_the_attic_policy_and_may_exceed_outdoor_delta_t():
     assert abs(res.by_category["ceiling"] - 0.03 * 100.0 * air * factor) < 1e-6
     # and it is strictly more than the plain outdoor ΔT would give
     assert res.by_category["ceiling"] > 0.03 * 100.0 * air
+
+
+def test_ceiling_cooling_uses_attic_temp_not_outdoor():
+    """The hot-attic correction: at 130°F attic vs 89°F outdoor and 75°F indoors, the
+    ceiling sees (130-75) instead of (89-75) — nearly 4x the gain. This is the
+    373 -> ~4,400 BTU/hr gap against the professional Manual J."""
+    env = _envelope([geometry.Surface("ceiling", 100.0, "attic")])
+    sc = sidecar.SideCar(
+        assemblies={"ceiling": 0.03},
+        design=sidecar.DesignConditions(70, 15, 50),
+        infiltration_ach=0.0,
+        cooling=sidecar.Cooling(indoor_f=75, outdoor_1_f=89, shgc=0.3, occupants=0,
+                                attic_temp_f=130.0),
+    )
+    res = loads.cooling_load(env, sc)
+    assert res.by_category["ceiling"] == pytest.approx(0.03 * 100.0 * (130.0 - 75.0))
+
+
+def test_ceiling_cooling_falls_back_to_sol_air_when_nothing_is_declared():
+    """Level 3 of the precedence: no `spaces.attic.summer_temp_f`, no `cooling.attic_temp_f`.
+
+    Outdoor 95°F -> sol-air 95 + 50*0.85 = 137.5°F, so ΔT 62.5 and the gain is 187.5.
+    Every wrong resolution lands somewhere else: the outdoor ΔT gives 60, the unvented
+    default halves it to 30, and forgetting to scale the uplift by absorptance gives 210.
+    """
+    env = _envelope([geometry.Surface("ceiling", 100.0, "attic")])
+    sc = _sidecar(assemblies={"ceiling": 0.03}, cooling=_cooling(outdoor_1_f=95))
+    res = loads.cooling_load(env, sc)
+    assert res.by_category["ceiling"] == pytest.approx(0.03 * 100.0 * (137.5 - 75.0))
+
+
+def test_declared_attic_summer_temp_beats_cooling_attic_temp():
+    """Level 1 beats level 2: an observed attic temperature outranks the side-car's
+    whole-house override, which in turn outranks the sol-air estimate.
+
+    105 / 130 / 137.5 are held far apart on purpose — the three candidate ΔTs are 30,
+    55 and 62.5, so a resolver that picks the wrong one cannot land on 90 by accident.
+    """
+    env = _envelope([geometry.Surface("ceiling", 100.0, "attic")])
+    sc = _sidecar(assemblies={"ceiling": 0.03},
+                  spaces={"attic": spaces.SpacePolicy("attic", summer_temp_f=105.0)},
+                  cooling=_cooling(outdoor_1_f=95, attic_temp_f=130.0))
+    res = loads.cooling_load(env, sc)
+    assert res.by_category["ceiling"] == pytest.approx(0.03 * 100.0 * (105.0 - 75.0))
+
+
+def test_cooling_attic_temp_beats_sol_air():
+    """Level 2 beats level 3, with the two well separated: an explicit 118°F attic gives
+    ΔT 43, where the sol-air estimate for this outdoor temp would give 62.5 and the
+    plain outdoor ΔT 20."""
+    env = _envelope([geometry.Surface("ceiling", 100.0, "attic")])
+    sc = _sidecar(assemblies={"ceiling": 0.03}, cooling=_cooling(outdoor_1_f=95,
+                                                                attic_temp_f=118.0))
+    res = loads.cooling_load(env, sc)
+    assert res.by_category["ceiling"] == pytest.approx(0.03 * 100.0 * (118.0 - 75.0))
+
+
+def test_hot_attic_applies_only_to_the_attic_space():
+    """A crawlspace is not sun-heated: it keeps the ordinary unvented half-ΔT, and the
+    attic override must not leak into it."""
+    env = _envelope([geometry.Surface("buffer_floor", 100.0, "crawlspace")])
+    sc = _sidecar(assemblies={"buffer_floor": 0.5},
+                  cooling=_cooling(outdoor_1_f=95, attic_temp_f=130.0))
+    res = loads.cooling_load(env, sc)
+    air = sc.cooling.cooling_delta_t                       # 20
+    assert res.by_category["buffer_floor"] == pytest.approx(0.5 * 100.0 * air
+                                                            * spaces.UNVENTED_FACTOR)
+
+
+def test_hot_attic_does_not_touch_the_heating_side():
+    """`cooling.attic_temp_f` is a summer observation; winter still uses the attic's own
+    policy (unvented -> half the heating ΔT), not 130°F."""
+    env = _envelope([geometry.Surface("ceiling", 100.0, "attic")])
+    sc = _sidecar(assemblies={"ceiling": 0.03},
+                  cooling=_cooling(outdoor_1_f=95, attic_temp_f=130.0))
+    res = loads.heating_load(env, sc)
+    assert res.conduction_btuh == pytest.approx(
+        0.03 * 100.0 * sc.design.heating_delta_t * spaces.UNVENTED_FACTOR)
+
+
+def test_vented_attic_still_gets_the_hot_attic_treatment_in_cooling():
+    """`vented` is a winter shorthand. Venting cools an attic but does not make it track
+    outdoor air on a sunny design day, so summer still uses the sol-air estimate; the
+    escape hatch is an observed `summer_temp_f`, not `vented: true`.
+    """
+    env = _envelope([geometry.Surface("ceiling", 100.0, "attic")])
+    sc = _sidecar(assemblies={"ceiling": 0.03},
+                  spaces={"attic": spaces.SpacePolicy("attic", vented=True)},
+                  cooling=_cooling(outdoor_1_f=95))
+    res = loads.cooling_load(env, sc)
+    assert res.by_category["ceiling"] == pytest.approx(0.03 * 100.0 * (137.5 - 75.0))
+    # and heating is untouched: vented -> the full outdoor ΔT there
+    heat = loads.heating_load(env, sc)
+    assert heat.conduction_btuh == pytest.approx(0.03 * 100.0 * sc.design.heating_delta_t)
 
 
 def test_cooling_buffer_floor_uses_its_space_policy():
@@ -338,7 +432,9 @@ def test_buffer_floor_u_falls_back_through_exposed_floor_to_floor():
     """The far end of the chain — what this project's own Refrhus side-car actually hits."""
     env = _envelope([geometry.Surface("buffer_floor", 100.0, "crawlspace")])
     sc = _sidecar(assemblies={"floor": 0.02})     # neither buffer_floor nor exposed_floor
-    with pytest.warns(UserWarning, match="floor"):
+    # match the donor's U-value, not its name: "floor" is a substring of "buffer_floor",
+    # so a message naming only the recipient would satisfy match="floor" vacuously.
+    with pytest.warns(UserWarning, match=r"U-value \(0\.02\)"):
         res = loads.heating_load(env, sc)
     dt = sc.design.heating_delta_t * spaces.UNVENTED_FACTOR
     assert abs(res.conduction_btuh - 0.02 * 100.0 * dt) < 1e-6
@@ -351,7 +447,11 @@ def test_borrowing_an_assembly_u_warns_naming_both_categories():
     with pytest.warns(UserWarning) as rec:
         loads.heating_load(env, sc)
     msg = str(rec[0].message)
-    assert "buffer_floor" in msg and "floor" in msg        # recipient and donor both named
+    # The donor must be identified by something that is NOT a substring of the recipient:
+    # asserting `"floor" in msg` passes on any message naming only `buffer_floor`. Its
+    # U-value is the sharp test — it can only have come from reading the donor entry.
+    assert "buffer_floor" in msg                           # the recipient
+    assert "0.02" in msg                                   # the donor's U-value, verbatim
 
 
 def test_declared_assembly_does_not_warn():

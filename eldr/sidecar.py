@@ -57,6 +57,10 @@ class Cooling:
     outdoor_1_f: float | None   # 1% cooling design temp; None -> resolved from lat/long
     shgc: float                 # window solar heat gain coefficient (0..1)
     occupants: float            # for internal + latent gains
+    # Design-day attic air temperature. None -> loads.py estimates it from the outdoor
+    # design temp (spaces.sol_air_attic_temp_f). Outranked by an observed
+    # `spaces.attic.summer_temp_f`; overrides the estimate everywhere else.
+    attic_temp_f: float | None = None
 
     @property
     def cooling_delta_t(self) -> float:
@@ -145,6 +149,7 @@ def load_sidecar(path: str) -> SideCar:
             outdoor_1_f=_optional_number(cooling_raw, "outdoor_1_f", "cooling"),
             shgc=_require_number(cooling_raw, "shgc", "cooling"),
             occupants=_require_number(cooling_raw, "occupants", "cooling"),
+            attic_temp_f=_optional_number(cooling_raw, "attic_temp_f", "cooling"),
         )
     ducts_raw = raw.get("ducts")
     if ducts_raw is not None and not isinstance(ducts_raw, dict):
@@ -291,6 +296,17 @@ def _validate(sc: SideCar) -> None:
             raise ValueError("cooling.shgc must be between 0 and 1")
         if c.occupants < 0:
             raise ValueError("cooling.occupants must be >= 0")
+        if c.attic_temp_f is not None:
+            # Checked separately from `cnum` so the message can say what the bound means:
+            # the whole point of the override is an attic HOTTER than the house, and an
+            # attic at or below the setpoint is a typo (or Celsius), not a design input.
+            if not math.isfinite(c.attic_temp_f):
+                raise ValueError(
+                    f"cooling.attic_temp_f must be a finite number (got {c.attic_temp_f!r})")
+            if c.attic_temp_f <= c.indoor_f:
+                raise ValueError(
+                    f"cooling.attic_temp_f ({c.attic_temp_f}) must exceed cooling.indoor_f "
+                    f"({c.indoor_f}) — it is a hot-attic design temperature in °F")
     if sc.ducts is not None:
         if not math.isfinite(sc.ducts.friction_rate) or sc.ducts.friction_rate <= 0:
             raise ValueError("ducts.friction_rate must be finite and > 0")

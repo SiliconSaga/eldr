@@ -150,6 +150,38 @@ def test_cooling_block_rejects_boolean(tmp_path):
         sidecar.load_sidecar(_write(tmp_path, _VALID + bad))
 
 
+def test_cooling_attic_temp_optional(tmp_path):
+    # the hot-attic override is opt-in; absent it, loads fall back to the sol-air estimate
+    sc = sidecar.load_sidecar(_write(tmp_path, _VALID + _COOLING))
+    assert sc.cooling.attic_temp_f is None
+
+
+def test_explicit_attic_temp_overrides_sol_air(tmp_path):
+    # re-indented to BASE_SIDECAR's level — `_write` dedents the concatenation as a whole
+    sc = _write_and_load(tmp_path, BASE_SIDECAR + textwrap.indent(textwrap.dedent("""\
+        cooling:
+          indoor_f: 75
+          outdoor_1_f: 89
+          shgc: 0.3
+          occupants: 4
+          attic_temp_f: 130
+        """), "    "))
+    assert sc.cooling.attic_temp_f == 130.0
+
+
+def test_cooling_attic_temp_must_exceed_indoor(tmp_path):
+    # an "attic" colder than the house is not a hot attic; it is a typo or a wrong unit
+    bad = _COOLING + "      attic_temp_f: 70\n"
+    with pytest.raises(ValueError, match="attic_temp_f"):
+        sidecar.load_sidecar(_write(tmp_path, _VALID + bad))
+
+
+def test_cooling_attic_temp_must_be_finite(tmp_path):
+    bad = _COOLING + "      attic_temp_f: .inf\n"
+    with pytest.raises(ValueError, match="attic_temp_f"):
+        sidecar.load_sidecar(_write(tmp_path, _VALID + bad))
+
+
 _DUCTS = "    ducts:\n      friction_rate: 0.1\n      runs:\n        - {name: trunk, cfm: 720}\n        - {name: kids, cfm: 90}\n"
 
 

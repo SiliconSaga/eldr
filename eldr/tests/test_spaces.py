@@ -49,6 +49,23 @@ def test_degenerate_delta_t_yields_zero():
     assert spaces.heating_factor(p, 70.0, 70.0) == 0.0
 
 
+def test_sol_air_attic_is_much_hotter_than_outdoor():
+    t = spaces.sol_air_attic_temp_f(outdoor_f=89.0)
+    assert 115.0 <= t <= 145.0
+
+
+def test_sol_air_uplift_scales_with_absorptance():
+    """The uplift is scaled by absorptance, not a flat constant.
+
+    80°F with a 0.6 (light-coloured roof) absorptance is chosen so the answer, 110,
+    collides with nothing a plausible wrong implementation would produce: an unscaled
+    uplift gives 130, the default 0.85 absorptance gives 122.5, ignoring the uplift
+    entirely gives 80, and multiplying rather than adding gives 4000.
+    """
+    assert spaces.sol_air_attic_temp_f(80.0, absorptance=0.6) == pytest.approx(110.0)
+    assert spaces.sol_air_attic_temp_f(80.0) == pytest.approx(122.5)   # the 0.85 default
+
+
 def test_policy_for_uses_declared_then_default():
     declared = {"attic": spaces.SpacePolicy(name="attic", vented=True)}
     assert spaces.policy_for("attic", declared).vented is True
