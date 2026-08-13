@@ -324,8 +324,17 @@ _INTENTIONALLY_SILENT_VOID_CATEGORIES = {"floor"}
 def test_every_void_category_the_geometry_can_emit_is_explained_or_silent_on_purpose():
     """`report._VOID_TREATMENT` hand-mirrors `geometry.CATEGORY_FOR_BELOW` by copy — there
     is no constant to share, because one names categories and the other names what they
-    mean to a reader. That copy has no guard: renaming `exposed_floor` in `geometry`
-    degrades the report to no claim at all, quietly, with nothing failing.
+    mean to a reader. Renaming `exposed_floor` in `geometry` degrades the report to no
+    claim at all, and this test says so *directly* instead of leaving it to be inferred.
+
+    Honest scope, because the first version of this docstring overstated it: that rename
+    is NOT silent today. `test_integration.test_below_void_outdoor_reaches_exposed_floor_
+    and_the_report_says_so` already fails on it, measured. What that test cannot say is
+    WHY it failed — it exercises one category end to end, so it reads as a broken
+    `below_void: outdoor` path rather than as a table that has fallen out of sync, and it
+    covers only the categories it happens to drive. This one enumerates every category
+    `_horizontal_surfaces` can emit and names the invariant, so the next category added to
+    `CATEGORY_FOR_BELOW` — which no integration test covers yet — is caught on arrival.
 
     Silence is the safe failure mode and stays allowed, but only for a category that is
     listed here as silent on purpose. A NEW one has to be a deliberate decision.

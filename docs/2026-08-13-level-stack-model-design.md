@@ -135,9 +135,17 @@ Assembly fallbacks matter for compatibility: an existing side-car declaring only
 
 A new module holding **pure geometry, no thermal knowledge**, so it can be tested independently of loads.
 
+The shipped entry point, which is **not** the two-parameter `resolve_stack(...) -> StackResolution` this document specified during design — neither that name nor `StackResolution` exists anywhere in the code:
+
 ```python
-resolve_stack(levels, rooms, tolerance_cm=20.0, min_region_ft2=2.0) -> StackResolution
+resolve_faces(levels, rooms_by_level, *,
+              below_void="crawlspace", above_void="attic",
+              level_voids=None, ignore_ids=frozenset(),
+              tolerance_cm=TOLERANCE_CM, min_region_ft2=MIN_REGION_FT2,
+              grid_cm=GRID_CM) -> dict[str, FaceSplit]
 ```
+
+Keyed by room id, one `FaceSplit` each, carrying `below` / `above` category→ft² maps plus the measured `void_below_ft2`. `level_voids` overrides the two void names per level id; `ignore_ids` drops levels the side-car marks `role: ignore`. The three tuning constants are **default arguments bound at import**, so a caller — including a test — must pass them explicitly to bind to the module's current values; monkeypatching the module attribute does nothing.
 
 Algorithm, per conditioned room, for its bottom face and again for its top face:
 
@@ -154,7 +162,7 @@ Algorithm, per conditioned room, for its bottom face and again for its top face:
 
 Undrawn space defaults: a void **below** resolves to the `crawlspace` space, a void **above** to `attic` — the overwhelmingly common cases for a house, both overridable per level. The report warns on void area regardless, so the default is never silent.
 
-Rasterization is an implementation detail chosen for robustness with non-convex polygons; the grid is fine enough that it does not affect reported figures at the tolerances above. Exact polygon clipping is a valid later swap behind the same signature.
+Rasterization is an implementation detail chosen for robustness with non-convex polygons, but **not a free one**. This document originally claimed "the grid is fine enough that it does not affect reported figures at the tolerances above"; that is false, and step 4's coupling note is why. Measured: `GRID_CM` 15 → 5 makes a gap that must dissolve survive instead, and 15 → 60 makes a gap that must survive dissolve — each on its own changes results enough to fail a test. Grid size moves what counts as a misalignment artifact, not just how finely a polygon is sampled. Exact polygon clipping is still a valid later swap behind the same signature, and would remove the coupling along with the raster.
 
 ## Side-car schema
 
@@ -243,13 +251,15 @@ Integration-level, the Refrhus figures above are the acceptance targets: 458.8 s
 
 ## Corroboration worth keeping
 
-The floor line is the largest single gap against the professional Manual J, and it is worth recording that the residual is traceable to *inputs*, not to the engine. Taking the professionals' own measured **U-0.521** for the uninsulated floor over the crawl, their implied full outdoor ΔT (55 °F, i.e. treating the crawl as outdoor air rather than a buffer), and the resolver's 293.5 sqft of crawl-facing floor:
+The floor line is the largest single gap against the professional Manual J, and it is worth recording that the residual is traceable to *inputs*, not to the engine. Taking the professionals' own measured **U-0.521** for the uninsulated floor over the crawl, their implied full outdoor ΔT (55 °F, i.e. treating the crawl as outdoor air rather than a buffer), and the resolver's **285.06 sqft of crawl-facing floor**:
 
 ```
-0.521 × 293.5 × 55 = 8,410 BTU/hr    vs. their 8,608 BTU/hr floor line
+0.521 × 285.06 × 55 = 8,169 BTU/hr    vs. their 8,608 BTU/hr floor line
 ```
 
-Within 2.3% on an area Eldr resolved from the model independently of their takeoff. So the gap between Eldr's floor line and theirs is two side-car inputs — `assemblies.buffer_floor` (currently borrowing the slab's U-0.05) and the crawlspace's temperature policy (currently 0.5 of ΔT rather than their implied 1.0) — and not a defect in the resolution. Setting those two makes the lines meet; the reason they are not set is that the owner's own observation of the crawl disagrees with the professionals' assumption, which is a modeling decision, not an arithmetic one.
+Within **5.1%** on an area Eldr resolved from the model independently of their takeoff. So the gap between Eldr's floor line and theirs is two side-car inputs — `assemblies.buffer_floor` (currently borrowing the slab's U-0.05) and the crawlspace's temperature policy (currently 0.5 of ΔT rather than their implied 1.0) — and not a defect in the resolution. Setting those two brings the lines within a few percent; the reason they are not set is that the owner's own observation of the crawl disagrees with the professionals' assumption, which is a modeling decision, not an arithmetic one.
+
+**Use the crawl-facing share, not the `buffer_floor` total.** The envelope's `buffer_floor` is 293.52 sqft, of which 285.06 faces `crawlspace` and 8.46 faces `garage`. Only the crawl share belongs in this comparison — the garage floor is a different space at a different temperature, and it is not part of the professionals' floor line. Substituting the total gives 8,410 and an apparent 2.3% agreement, which is the number this section carried until a review caught it. An overstated agreement a reader can falsify in a minute is worth less than an accurate one, and 5.1% against an independent professional measurement is still strong.
 
 ## Scope / deferred
 

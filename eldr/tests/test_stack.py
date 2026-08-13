@@ -221,9 +221,16 @@ def test_a_split_face_is_normalized_across_its_categories_not_onto_one():
     """The same un-rasterable L, half over a basement: two categories, and the drift is
     re-absorbed in proportion rather than dumped on either one.
 
-    A single-category fixture cannot tell `{k: v * area / total}` apart from
-    `{k: area for k in areas}` — both make the sum come out right when there is only one
-    k. The split does, and it is the shape every real room has.
+    The sum-to-area assertion is the weaker half of this test and is stated honestly as
+    such: `{k: area_ft2 for k in areas}` is caught by the rectangle fixture above as well,
+    because that room's floor also splits two ways. (An earlier version of this docstring
+    claimed a single-category fixture was the only alternative, which was wrong — the
+    single-category one is the test ABOVE this, not the rest of the suite.)
+
+    What is unique here is the last two lines: the exact per-category areas. Nothing else
+    in the suite pins HOW the drift is distributed, only that the total lands right. An
+    implementation that pushed all 2.65% onto whichever category happened to be first, or
+    onto the largest, would keep every sum correct and every other assertion green.
     """
     room = _odd_ell()
     levels = [_lv("LB", "Basement", 0.0), _lv("LM", "Main", 250.0)]

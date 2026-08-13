@@ -330,19 +330,27 @@ def test_the_unbound_spaces_warning_reaches_cooling_and_per_room_too():
 
 
 def test_the_attic_space_name_and_the_resolvers_above_void_default_agree():
-    """Two independent literals both spelling `"attic"`, with nothing pinning them.
+    """Two independent literals both spelling `"attic"`, coupled by nothing but spelling.
 
     `stack.resolve_faces` names an undrawn space above a room from its `above_void`
     default; `loads` recognizes the hot-attic cooling substitution by comparing a
     surface's space against `ATTIC_SPACE`. The substitution fires only when the two
-    strings match. Change either one — rename the default, or spell `ATTIC_SPACE`
-    differently — and every ceiling in every model silently drops from the sol-air attic
-    temperature to the bare unvented 0.5: on Refrhus, a cooling factor of 3.66 becoming
-    0.50, a 7x error in the branch's marquee number. No exception, no failing test.
+    strings match. Rename either and every ceiling drops from the sol-air attic
+    temperature to the bare unvented 0.5 — on Refrhus, a cooling factor of 3.66 becoming
+    0.50.
 
-    Same shape as the `_VOID_TREATMENT` drift guard in `test_report.py`: two modules hold
-    the same value by copy because there is no natural constant to share, so the copy gets
-    a guard instead. Read off the signature rather than restated here, so the assertion
+    That does NOT go unnoticed today, and the first version of this docstring wrongly said
+    it did. Measured on the suite: `ATTIC_SPACE = "loft"` fails 13 other tests and
+    `above_void = "roofspace"` fails 5. What none of those 18 failures states is the
+    CAUSE — they are attic-policy, JSON-export and overview assertions failing on values
+    that never mention the coupling behind them, so a reader who renamed one literal sees
+    a wall of unrelated-looking red and has to reconstruct why. This one fails with
+    `assert 'roofspace' == 'attic'` under a name that says what the rule is.
+
+    Kept for that, not for coverage: one line that localizes an 18-test blast radius to a
+    one-line diagnosis, and that states a rule which otherwise exists only as a
+    coincidence between two modules. Same shape as the `_VOID_TREATMENT` drift guard in
+    `test_report.py`. Read off the signature rather than restated here, so the assertion
     cannot drift away from the default it is guarding.
     """
     import inspect
