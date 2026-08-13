@@ -32,12 +32,20 @@ MIN_REGION_FT2 = 2.0
 # Rasterization cell size. 15cm cells are ~0.24 ft^2 — far finer than MIN_REGION_FT2.
 #
 # TOLERANCE_CM and GRID_CM are COUPLED, which they did not use to be. _settle_voids
-# does a morphological opening (erode, then dilate), and the gap metric reaches one
-# cell further than the tolerance itself, so a void narrower than
+# does a morphological opening (erode, then dilate), and the gap metric reaches one cell
+# further than the tolerance itself, so the width that dissolves completely scales
+# roughly as
 #     2 x (TOLERANCE_CM + one cell)
-# dissolves completely: ~70cm at the current settings, ~80cm at GRID_CM=20, ~60cm at
-# GRID_CM=10. Grid size was once a pure discretization knob — refining it now also
-# narrows what counts as an artifact, so move it deliberately, not for speed.
+# — on the order of 70cm at the current settings, ~80cm at GRID_CM=20, ~60cm at
+# GRID_CM=10. Treat that as a rule of thumb for which knob to reach for, NOT as a
+# threshold: the real cutoff is a band, not a number. It falls out of a discrete metric
+# on a grid whose cells are sized per room (each room's bbox is divided into a whole
+# number of cells), so it varies with a void's shape and where it lands relative to the
+# cell centres, and it does not move cleanly monotonically with grid size. If a
+# particular void's fate matters, measure it — don't compute it from the formula.
+#
+# The point that does survive: grid size was once a pure discretization knob. Refining
+# it now also narrows what counts as an artifact, so move it deliberately, not for speed.
 GRID_CM = 15.0
 
 

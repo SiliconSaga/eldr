@@ -131,6 +131,64 @@ def test_wall_tag_flows_through_to_report(tmp_path):
     assert "buffer_wall" in md
 
 
+# A conditioned storey sitting over an unconditioned garage: the resolver gives its
+# rooms a `buffer_floor`, a category no side-car in this repo declares an assembly for.
+FIXTURE_OVER_GARAGE = textwrap.dedent("""\
+<?xml version='1.0'?>
+<home version='7400' name='t' wallHeight='300'>
+  <level id='LG' name='Garage' elevation='0.0' floorThickness='12.0' height='300' elevationIndex='0'/>
+  <level id='L1' name='Main' elevation='300.0' floorThickness='12.0' height='300' elevationIndex='1'/>
+  <wall id='g-n' level='LG' xStart='0' yStart='0' xEnd='500' yEnd='0' height='300' thickness='10'/>
+  <wall id='g-s' level='LG' xStart='0' yStart='500' xEnd='500' yEnd='500' height='300' thickness='10'/>
+  <wall id='g-w' level='LG' xStart='0' yStart='0' xEnd='0' yEnd='500' height='300' thickness='10'/>
+  <wall id='g-e' level='LG' xStart='500' yStart='0' xEnd='500' yEnd='500' height='300' thickness='10'/>
+  <wall id='m-n' level='L1' xStart='0' yStart='0' xEnd='500' yEnd='0' height='300' thickness='10'/>
+  <wall id='m-s' level='L1' xStart='0' yStart='500' xEnd='500' yEnd='500' height='300' thickness='10'/>
+  <wall id='m-w' level='L1' xStart='0' yStart='0' xEnd='0' yEnd='500' height='300' thickness='10'/>
+  <wall id='m-e' level='L1' xStart='500' yStart='0' xEnd='500' yEnd='500' height='300' thickness='10'/>
+  <room id='r-gar' level='LG' name='Gar'>
+    <point x='0' y='0'/><point x='500' y='0'/><point x='500' y='500'/><point x='0' y='500'/>
+  </room>
+  <room id='r-main' level='L1' name='Living'>
+    <point x='0' y='0'/><point x='500' y='0'/><point x='500' y='500'/><point x='0' y='500'/>
+  </room>
+</home>
+""")
+
+
+def test_buffer_floor_without_an_assembly_fails_loudly(tmp_path):
+    """PINS CURRENT BEHAVIOR, NOT DESIRED BEHAVIOR — flip this in Task 6.
+
+    Wiring the stack resolver introduced `buffer_floor` / `exposed_floor` as surface
+    categories, and `loads._u_value` raises on any category the side-car has no assembly
+    for (only `buffer_wall` has a fallback). So `eldr analyze` against a house with a
+    room over a garage — including this project's own Refrhus model — raises today.
+
+    That is a broken primary path, and it deserves a failing-on-purpose detector rather
+    than a note in a report: when Task 6 teaches loads to read `Surface.space` and its
+    per-space policy, this test starts failing and has to be rewritten to assert the
+    real answer. Until then the gap is visible instead of silent.
+    """
+    home = tmp_path / "Home.xml"
+    home.write_text(FIXTURE_OVER_GARAGE)
+    sc = tmp_path / "sc.yaml"
+    sc.write_text(SIDECAR)                       # declares exterior_wall/window/ceiling/floor
+    with pytest.raises(KeyError, match="buffer_floor"):
+        cli.run(str(home), str(sc))
+
+
+def test_buffer_floor_is_actually_what_that_model_produces(tmp_path):
+    """Guards the test above from rotting into a pass for the wrong reason: if the
+    geometry stopped emitting `buffer_floor`, the KeyError test would still 'pass' on
+    some other missing category."""
+    from eldr import geometry
+    home = tmp_path / "Home.xml"
+    home.write_text(FIXTURE_OVER_GARAGE)
+    env = geometry.extract_envelope(str(home))
+    buffer_floors = [s for s in env.surfaces if s.category == "buffer_floor"]
+    assert buffer_floors and all(s.space == "garage" for s in buffer_floors)
+
+
 def test_cli_walls_and_overview_mutually_exclusive():
     with pytest.raises(SystemExit):
         cli.main(["home.xml", "--walls", "--overview"])

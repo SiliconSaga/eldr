@@ -1,4 +1,5 @@
 import textwrap
+import warnings
 import zipfile
 import pytest
 from eldr import geometry
@@ -480,11 +481,22 @@ def test_top_room_ceiling_faces_the_attic(tmp_path):
     assert ceil.space == "attic"
 
 
-def test_whole_house_horizontals_equal_the_sum_of_room_horizontals(tmp_path):
+@pytest.mark.parametrize("fixture", [
+    # Rooms fill their levels, so the OLD bounding-box code agreed here too. Kept as the
+    # control: it must stay in agreement, and it proves the resolver didn't break the
+    # easy case while fixing the hard one.
+    MULTI_LEVEL_FIXTURE,
+    # The discriminating case. An L-shaped level's bounding box (1000x1000) swallows the
+    # empty notch, so the old whole-house ceiling/floor read 1076.4 ft^2 against 807.3
+    # ft^2 of actual room polygon — a 269 ft^2 phantom surface on a 807 ft^2 house. This
+    # parameter fails against the bounding-box model and passes against the resolver.
+    LSHAPE_FIXTURE,
+], ids=["rooms-fill-the-level", "L-shaped-level-with-a-notch"])
+def test_whole_house_horizontals_equal_the_sum_of_room_horizontals(tmp_path, fixture):
     """Whole-house surfaces used level bounding boxes while per-room used polygons,
     so the two disagreed. They are now the same resolution by construction."""
     p = tmp_path / "Home.xml"
-    p.write_text(MULTI_LEVEL_FIXTURE)
+    p.write_text(fixture)
     env = geometry.extract_envelope(str(p))
     horizontals = {"ceiling", "floor", "buffer_floor", "exposed_floor"}
     for cat in horizontals:
@@ -503,6 +515,26 @@ def test_roomless_model_keeps_the_bounding_box_envelope(tmp_path):
     foot = units.sqcm_to_sqft(1000 * 500)
     assert abs(cats["ceiling"] - foot) < 1e-6
     assert abs(cats["floor"] - foot) < 1e-6
+
+
+def test_sidecar_level_name_not_in_the_model_warns(tmp_path):
+    """A `levels` entry addresses a level by name, so a typo binds to nothing. Silence
+    is the dangerous outcome: a mistyped `role: ignore` on a duct chase looks handled
+    while quietly leaving its phantom volume in place."""
+    from eldr import sidecar as sc_mod
+    p = tmp_path / "Home.xml"
+    p.write_text(MULTI_LEVEL_FIXTURE)
+    with pytest.warns(UserWarning, match="levels` reference level names not in the model"):
+        geometry.extract_envelope(str(p), levels={"Mian": sc_mod.LevelSpec(role="ignore")})
+
+
+def test_sidecar_level_name_present_in_the_model_does_not_warn(tmp_path):
+    from eldr import sidecar as sc_mod
+    p = tmp_path / "Home.xml"
+    p.write_text(MULTI_LEVEL_FIXTURE)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        geometry.extract_envelope(str(p), levels={"Main": sc_mod.LevelSpec(height_ft=9.0)})
 
 
 def test_sidecar_level_height_override_changes_volume(tmp_path):
@@ -532,8 +564,45 @@ def test_scaffolding_level_with_a_wall_adds_no_volume(tmp_path):
         "  <wall id='t-e' level='LT' xStart='400' yStart='0' xEnd='400' yEnd='300'"
         " height='30' thickness='10'/>\n"
         "  <room id='rb'"))
-    env = geometry.extract_envelope(str(p))
+    with pytest.warns(UserWarning, match="walls but no rooms"):
+        env = geometry.extract_envelope(str(p))
     from eldr import units
     expected = (units.sqcm_to_sqft(400 * 300) * units.cm_to_ft(200)
                 + units.sqcm_to_sqft(400 * 300) * units.cm_to_ft(250))
     assert abs(env.volume_ft3 - expected) < 1e-6
+
+
+def test_walled_roomless_level_warns_instead_of_guessing(tmp_path):
+    """Dropping a roomless level is right for a duct chase and wrong for a storey whose
+    rooms aren't drawn yet — and the two are indistinguishable mid-modeling. Eldr takes
+    the safe route (exclude it) but must SAY so: silently zeroing the infiltration term
+    is the failure mode that hides. Nothing here guesses which kind of level it is.
+    """
+    p = tmp_path / "Home.xml"
+    # Every storey walled, no rooms anywhere except the basement -> Main is dropped.
+    p.write_text(MULTI_LEVEL_FIXTURE.replace(
+        "  <room id='rm' level='LM' name='Living room'>\n"
+        "    <point x='0' y='0'/><point x='400' y='0'/>"
+        "<point x='400' y='300'/><point x='0' y='300'/>\n"
+        "  </room>\n", ""))
+    with pytest.warns(UserWarning, match=r"'Main' has walls but no rooms"):
+        env = geometry.extract_envelope(str(p))
+    from eldr import units
+    # Only the basement survives; Main's 400x300x250 is gone from infiltration entirely.
+    assert abs(env.volume_ft3
+               - units.sqcm_to_sqft(400 * 300) * units.cm_to_ft(200)) < 1e-6
+
+
+def test_a_lone_wall_on_a_roomless_level_is_too_slight_to_warn(tmp_path):
+    """The noise floor: one wall spans zero footprint, so there is nothing to report."""
+    p = tmp_path / "Home.xml"
+    p.write_text(MULTI_LEVEL_FIXTURE.replace(
+        "  <room id='rb'",
+        "  <level id='LT' name='transition' elevation='210.0' floorThickness='2.0'"
+        " height='30' elevationIndex='0'/>\n"
+        "  <wall id='t-n' level='LT' xStart='0' yStart='0' xEnd='400' yEnd='0'"
+        " height='30' thickness='10'/>\n"
+        "  <room id='rb'"))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")       # any warning at all fails the test
+        geometry.extract_envelope(str(p))

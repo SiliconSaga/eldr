@@ -189,6 +189,12 @@ def _point_in_polygon(px, py, points):
 # wall as envelope vs partition — clears the wall's half-thickness plus a margin.
 _SIDE_PROBE_MARGIN_CM = 15.0
 
+# Footprint (ft^2) below which a roomless level's walls are too slight to be worth
+# warning about — a lone wall spans zero area, a short L a fraction of a foot. This is
+# a noise floor, NOT an attempt to tell a duct chase from a storey; anything with a real
+# footprint warns, because that judgement belongs to the modeler.
+_SCAFFOLD_WARN_FT2 = 10.0
+
 
 def _conditioned_room_on_sides(w, rooms):
     """(left, right): does a *conditioned* room sit on each side of wall `w`?
@@ -397,6 +403,14 @@ def extract_envelope(home_path: str, wall_boundaries: dict[str, str] | None = No
                          f"side-car `levels` entry can't address one unambiguously — "
                          f"rename them in Sweet Home 3D")
     level_specs = levels or {}
+    # Level specs address levels by NAME, so a rename in SH3D or a typo leaves an entry
+    # pointing at nothing. Silence would be worst here: a typo'd `role: ignore` on a duct
+    # chase reads as "handled" while quietly reintroducing the phantom volume it was
+    # written to remove. Mirrors the unknown-wall-id warning below.
+    unknown_levels = set(level_specs) - set(_names)
+    if unknown_levels:
+        warnings.warn(f"side-car `levels` reference level names not in the model "
+                      f"(renamed or typo'd?): {sorted(unknown_levels)}", stacklevel=2)
 
     def _spec(lid):
         lv = levels_xml.get(lid)
@@ -489,11 +503,25 @@ def extract_envelope(home_path: str, wall_boundaries: dict[str, str] | None = No
                     g[cat] = g.get(cat, 0.0) + share
         # Conditioned volume for infiltration: sum conditioned-room floor area x height.
         # A level with only UNconditioned rooms (garage/crawlspace) contributes nothing —
-        # it isn't part of the conditioned envelope the air leaks into. A roomless level
-        # falls back to the bounding box (matches the wall-inference fallback), so a
-        # conditioned floor not yet drawn as rooms still counts.
+        # it isn't part of the conditioned envelope the air leaks into.
+        #
+        # A ROOMLESS level now contributes nothing either. `scaffolding_ids` claims every
+        # roomless level the moment ANY level has rooms, so the `elif not rooms_here`
+        # bounding-box fallback below survives only for the wholly roomless model — where
+        # the legacy envelope owns the result anyway. It is kept for exactly that case.
         if level_id in scaffolding:
-            continue          # joists / duct chases: geometry, not conditioned space
+            # Joists and duct chases are geometry, not conditioned space. But mid-modeling
+            # a REAL storey — walls drawn, rooms not yet — is indistinguishable from one,
+            # and dropping it can zero volume_ft3 outright and silently delete the whole
+            # infiltration term. So warn rather than guess: neither height nor extent
+            # separates a chase from a storey reliably, and a wrong guess buried in a
+            # number is worse than a loud message the modeler can act on.
+            if units.sqcm_to_sqft((maxx - minx) * (maxy - miny)) >= _SCAFFOLD_WARN_FT2:
+                warnings.warn(
+                    f"level {(lv.get('name') or level_id)!r} has walls but no rooms; it is "
+                    f"excluded from the conditioned volume (treated as joists/duct chase). "
+                    f"Draw rooms on it if it is conditioned space.", stacklevel=2)
+            continue
         height_ft = units.cm_to_ft(_height_cm(level_id, lv))
         cond_area_ft2 = sum(r["area_ft2"] for r in conditioned_here)
         if cond_area_ft2 > 0:
