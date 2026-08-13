@@ -57,7 +57,7 @@ Two findings drive the hard parts of the design.
 
 ## Void regions: misalignment vs. reality
 
-Voids cannot be promoted to surfaces silently — the schematic is a work in progress, and inventing load from unfinished geometry would be worse than under-counting. Eroding the void region away from the room's own outline separates the two failure modes:
+Voids cannot be promoted to surfaces silently — the schematic is a work in progress, and inventing load from unfinished geometry would be worse than under-counting. The design phase measured erosion of the void region away from the room's own outline, which separates the two failure modes:
 
 | Main room | void @0cm | @10cm | @20cm | @30cm | @45cm |
 |---|---:|---:|---:|---:|---:|
@@ -69,7 +69,25 @@ Voids cannot be promoted to surfaces silently — the schematic is a work in pro
 
 A 20 cm tolerance erases the genuine slivers — Main Bath, the unnamed fragments, every closet — because misalignment artifacts are thin bands roughly a wall-thickness wide hugging the room outline. But the Kitchen keeps 12.8 sqft even at 45 cm: that is not an edge band, it is an interior region where no basement or crawl polygon covers the Kitchen footprint. Erosion handles wall-thickness noise; it does not handle not-yet-tiled gaps.
 
-Therefore: **erosion removes sliver noise, surviving voids become buffer floor, and every surviving void is itemized by room and area in the report.** A bogus 12.8 sqft Kitchen void stays visible and fixable rather than being quietly priced in. The Kitchen doubles as the regression signal — it should trend to ~0 as the walls are aligned, and the report says when it gets there.
+Therefore: **the tolerance removes sliver noise, surviving voids become buffer floor, and every surviving void is itemized by room and area in the report** — so a bogus void stays visible and fixable rather than being quietly priced in. That intent stands; the operator that delivers it changed during implementation, and the next section records what that cost.
+
+### What actually shipped, and what it cost
+
+**The tolerance is measured against the VOID's own boundary, not the room's outline, and it is a morphological opening rather than a plain erosion** (`stack._settle_voids`). This is a deliberate change made during implementation, and the table above is the design-phase measurement of an algorithm that is no longer the one running. Two problems forced it:
+
+- **Measuring against the room's outline is one-directional.** It eats a tolerance-wide band off every side of a *real* void that happens to touch the room's edge — which is most of them — and hands that area to whatever is drawn beside it. On the Main Bed that biased the split to 70.55/58.62 where the geometry says 50/50: a 9.2% misallocation, understating precisely the crawlspace-facing floor this resolver exists to find. Erosion against the void's own boundary has no such preferred direction.
+- **A plain erosion still shaves the rim** where a real void meets real coverage, with the same one-directional loss. So the eroded core is dilated back over the void by the same tolerance — an opening — which deletes thin artifacts outright while leaving fat voids whole. A room narrower than twice the tolerance also stops losing its floor entirely, which the room-outline version did.
+
+The consequence for this document: **the Kitchen regression signal did not survive.** Measured on the real model, the Kitchen's gap is 3.54 sqft at zero tolerance and gone at 20 — absorbed into `interior` rather than itemized:
+
+```
+tol= 0  {'Kitchen': 3.54, 'Living room': 39.91, 'Main Bed': 113.89}
+tol=20  {'Living room': 39.41, 'Main Bed': 110.09}   <- as shipped
+```
+
+Note the design table's 17.5 sqft at zero tolerance against the 3.54 measured here: that difference is the raster, not the operator — the design measurements were taken at a 5 cm grid and the engine ships at 15 cm. What is left at the shipped grid is thin enough that an opening deletes it, which is what an opening is for. So the doc's promise that the Kitchen "should trend to ~0 as the walls are aligned, and the report says when it gets there" is **not delivered**: the Kitchen reads 0 today whether the walls are aligned or not, and its gap is priced into the load instead of being itemized.
+
+**The trade was accepted, and it is the right way round.** The signal it cost is one room's diagnostic on one house, worth a few sqft of visibility. The bias it fixed was a systematic 9.2% understatement of buffer-floor area on every void that touches a room edge, on every model — a wrong *number*, not a missing hint. The Main Bed (110.09 sqft) and Living room (39.41 sqft) still carry the itemization, so the schematic gap the block exists to surface is still surfaced; it is the small-scatter end of the range that has gone quiet. Recovering it would mean reporting pre-opening void area alongside the post-opening one, which is a reporting change rather than an algorithm change and is listed as deferred below.
 
 ## Buffer-space policy
 
@@ -128,7 +146,9 @@ Algorithm, per conditioned room, for its bottom face and again for its top face:
    A scaffolding level is one with no rooms — **but only when some other level in the model does have rooms.** The guard matters: Eldr supports models with no rooms at all (the bounding-box fallback documented in the README, and the shape of the existing test fixture), and without it every level in such a model would be classified as scaffolding, yielding a house with no floor, no ceiling and no volume. So: if the model has no rooms anywhere, the whole stack resolver stands down and the legacy bounding-box path handles the envelope exactly as it does today. Room-bearing models get the new resolution; roomless ones are untouched.
 2. Rasterize the room polygon. For each cell, scan outward through the ordered levels (down for the floor face, up for the ceiling face) and take the **first** level carrying a room that covers that cell. Scanning past non-overlapping levels is what makes the garage's vertical overlap harmless.
 3. Classify each cell by what it found: a conditioned room → `interior`; an unconditioned level's room → that level's space name; nothing at all → `void`.
-4. Discard void cells within `tolerance_cm` of the room's own outline as misalignment.
+4. Separate real exposure from misalignment among the void cells, by a **morphological opening of the void region measured against its own boundary** — erode by `tolerance_cm`, then dilate the surviving core back over the void by the same amount. Whatever the opening deletes is reassigned to the category of the nearest cell that *was* drawn, so no area is lost. See § *What actually shipped* above for why the tolerance is not measured against the room's outline, which is what earlier drafts of this document specified.
+
+   `tolerance_cm` and the raster's `grid_cm` are **coupled** by this: the gap metric reaches one cell further than the tolerance itself, so the width that dissolves completely scales roughly as `2 × (tolerance_cm + one cell)`. That is a rule of thumb for which knob to reach for, not a threshold — the real cutoff is a band, because the metric is discrete on a per-room grid. Grid size is therefore no longer a pure discretization knob; refining it also narrows what counts as an artifact.
 5. Aggregate cells into areas per category. Drop any category under `min_region_ft2` and redistribute proportionally — this is what removes the garage's 1.0 sqft artifact. If *every* category for a face falls under the threshold (a room smaller than the threshold itself), keep the largest rather than emitting nothing, so a tiny closet still gets its ceiling.
 6. The lowest conditioned level's floor face resolves to `ground` (slab), not `void`.
 
@@ -209,7 +229,8 @@ TDD throughout, following the existing suite's shape. The cases that matter:
 - **Vertical overlap is not adjacency:** a garage-shaped level overlapping a conditioned level's vertical span but not its footprint contributes nothing.
 - **Area split:** one room over two different levels splits proportionally (the Kitchen shape).
 - **Interior suppression:** conditioned over conditioned emits no surface.
-- **Void tolerance:** a wall-thickness sliver is discarded; an interior blob survives and is reported.
+- **Void tolerance:** a wall-thickness sliver is discarded; an interior blob survives and is reported. Bracketed from *both* sides — a gap just inside the tolerance must dissolve and one just outside it must survive — because `TOLERANCE_CM` and `GRID_CM` are captured as default arguments of `resolve_faces` and have to be read off the module and passed explicitly for a test to bind to the shipped values at all.
+- **Face normalization:** each face sums to the room's own polygon area, on a fixture whose raster area *cannot* equal it. An axis-aligned rectangle is useless here: `resolve_faces` divides each room's bbox into a whole number of cells, so a rectangle's raster area equals its shoelace area exactly and the normalization step is a no-op on it.
 - **Minimum region:** a 1 sqft resolved region is dropped and redistributed.
 - **Partial ceiling:** a room half-covered by the level above gets ceiling for the uncovered half only.
 - **Multi-level volume:** the regression test for the conditioned-volume fix.
@@ -217,10 +238,28 @@ TDD throughout, following the existing suite's shape. The cases that matter:
 - **Policy precedence:** temperature beats factor beats vented beats default; derived factor is correct.
 - **Attic:** `attic_temp_f` overrides sol-air; heating uses the vented policy.
 
-Integration-level, the Refrhus figures above are the acceptance targets: 458.8 sqft of ceiling to attic, 122.1 sqft of drawn crawl floor, ~120 sqft of surviving Main Bed void, and the Kitchen void visible as a schematic gap rather than absorbed into the load.
+Integration-level, the Refrhus figures above are the acceptance targets: 458.8 sqft of ceiling to attic, 122.1 sqft of drawn crawl floor, and ~110 sqft of surviving Main Bed void. The fourth original target — the Kitchen void visible as a schematic gap rather than absorbed into the load — was **dropped**, not met: see § *What actually shipped* for the algorithm change that cost it and why that trade was taken.
+
+## Corroboration worth keeping
+
+The floor line is the largest single gap against the professional Manual J, and it is worth recording that the residual is traceable to *inputs*, not to the engine. Taking the professionals' own measured **U-0.521** for the uninsulated floor over the crawl, their implied full outdoor ΔT (55 °F, i.e. treating the crawl as outdoor air rather than a buffer), and the resolver's 293.5 sqft of crawl-facing floor:
+
+```
+0.521 × 293.5 × 55 = 8,410 BTU/hr    vs. their 8,608 BTU/hr floor line
+```
+
+Within 2.3% on an area Eldr resolved from the model independently of their takeoff. So the gap between Eldr's floor line and theirs is two side-car inputs — `assemblies.buffer_floor` (currently borrowing the slab's U-0.05) and the crawlspace's temperature policy (currently 0.5 of ΔT rather than their implied 1.0) — and not a defect in the resolution. Setting those two makes the lines meet; the reason they are not set is that the owner's own observation of the crawl disagrees with the professionals' assumption, which is a modeling decision, not an arithmetic one.
 
 ## Scope / deferred
 
+- **Above-face misalignment settling.** The below-face void settling has no above-face counterpart, so ceiling cells resolve against whatever is drawn above with no artifact handling at all. On Refrhus that leaves roughly 19 sqft of impossible basement-room ceiling inside the ~989 sqft of ceiling reported. Deliberately not fixed in this cut: it is worth about **14 BTU/hr**, and a resolver change at this point costs more risk than it buys. The shape of the fix is to run the same opening on the above face, which means teaching `resolve_faces` to raster the above face into cells rather than accumulating areas directly.
+- **The pre-opening void area, reported alongside the post-opening one.** The morphological opening that removed the resolver's directional bias also removed the small-scatter end of the void itemization — the Kitchen regression signal this document originally promised (see § *What actually shipped*). Reporting both the raw and the settled void area per room restores the signal without touching the algorithm: the raw figure is what trends to zero as the walls are aligned, and the settled figure stays the one that drives load. Reporting change, not an engine change.
+- **A level with conditioned rooms but no walls contributes 0 ft³.** The volume loop is keyed on `walls_by_level`, so such a level is never visited: it reads "0 ft³" in the *Level heights* table, indistinguishable there from a level that legitimately holds no conditioned rooms, and it silently drops its share of the infiltration term as well (infiltration is sized on that same volume). Pre-existing, made visible rather than caused by this cut. The fix is to drive the volume loop off the levels themselves and use walls only for the roomless bounding-box fallback.
+- **No packaging metadata and no `ws` run adapter.** The component has no `pyproject.toml`/`setup.py` and no `ws run eldr`, so running an analysis on the real model needs an explicit `PYTHONPATH` pointing at the component root. The cost is not inconvenience: **it is why a broken primary path went unnoticed for five tasks.** The only routine execution of this engine is its unit tests, so nothing exercises `cli.analyze` end to end unless a human remembers the incantation. Packaging metadata plus a `ws` adapter that runs the real model against `hoards/refrhus/` would make a real-model run the cheap default it should be.
+- **Scaffolding walls are still billed to the envelope.** Roomless levels are excluded from the stack and from volume, but the `continue` that drops them sits *after* the wall loop, so their walls still contribute `exterior_wall` area. A duct chase drawn with walls therefore adds envelope wall area while adding no volume — the two halves of the scaffolding exclusion disagree. Refrhus's transition level has no walls, which is the only reason this is invisible today; it is exactly the case the `_SCAFFOLD_WARN_FT2` warning exists to announce.
+- **`loads.ATTIC_SPACE` and `stack.resolve_faces`'s `above_void="attic"` default are independent literals.** Both spell `"attic"`, and the hot-attic cooling substitution only fires when they agree — change one and every ceiling silently drops from the sol-air temperature to the bare unvented 0.5, with no error and no failing test. Nothing pins their agreement. Either share one constant or add a test that asserts a default-resolved ceiling gets the attic treatment.
+- **`void_categories`' mixed-envelope limitation belongs in the README.** It is recorded in `report.void_categories`' docstring and now in README § *Known limitations of the level stack*; the underlying fix — carrying the resolved category on the void itself, so the report attributes per void rather than per envelope — is the deferred work.
+- **`geometry.extract_envelope` wants breaking up.** Over 300 lines with four nested closures over the enclosing scope, doing level parsing, wall categorization, opening attribution, per-room attribution, volume accumulation and stack resolution in one body. A real finding at the wrong moment: this branch is nine tasks deep and the function is the highest-traffic code in the component, so a structural refactor here would be reviewed as part of a change that is about something else. Worth doing as its own cut, with the existing tests as the harness.
 - **Full ACCA CLTD/CLF** surface treatment. The policy interface is the seam it lands behind; this cut stays factor-based.
 - **A real attic energy balance** (roof area, ventilation rate, radiant barrier). Sol-air or an explicit temperature for now.
 - **Orientation-aware sol-air.** The estimate applies one flat solar uplift regardless of which way the roof planes face, so a north-facing slope and a south-facing one produce the same attic temperature. Weighting the uplift by roof-plane bearing is the same shape of change as the PV shading below — both are a fraction-of-roof-area weighting — and both want roof-plane geometry, so they belong together with sloped-roof support. Windows are already orientation-resolved to the exact degree; the roof is not, and the doc claimed otherwise until this was corrected.

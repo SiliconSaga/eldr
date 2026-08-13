@@ -252,8 +252,12 @@ _VOID_TOP_N = 3
 # at once — wrong category, and "buffer" reading as the 50% a buffer implies while the
 # engine had actually applied the `outdoor` policy's 1.0. The reassuring parenthetical
 # hedged the space NAME but not the TREATMENT, so it understated the load while sounding
-# careful. Hence: category and treatment live together here, so no caller can state one
-# without the other, and a category absent from this table produces NO claim at all.
+# careful. Hence: this table is the ONLY source of the treatment text, so a caller that
+# names a category without it states LESS than this block does, never something different
+# — which is the property that matters, and is all that is actually enforced. (`overview`
+# already names the category alone on the `outdoor` branch without stating the ΔT, so
+# "no caller can state one without the other" was never true.) A category absent from
+# this table produces NO claim at all.
 #
 # `floor` is deliberately absent even though `below_void: ground` reaches it
 # (`geometry.CATEGORY_FOR_BELOW`). Its presence in an envelope proves nothing: nearly
@@ -286,8 +290,9 @@ def void_categories(env: geometry_mod.Envelope) -> list[str]:
     anywhere", not "which categories did THESE voids become". A model whose levels name
     different `below_void`s carries both, and every caller then states both — one of them
     describing an area the voids did not produce. Closing it means carrying the category
-    on the void itself (see the branch's task-9 report); until then callers must not
-    present a per-category area as if it were the void's own.
+    on the void itself (deferred, and recorded in
+    `docs/2026-08-13-level-stack-model-design.md` § Scope / deferred); until then callers
+    must not present a per-category area as if it were the void's own.
     """
     present = {s.category for s in env.surfaces}
     return [c for c in _VOID_TREATMENT if c in present]
