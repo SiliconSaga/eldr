@@ -9,6 +9,23 @@ def _write(tmp_path, body):
     return str(p)
 
 
+BASE_SIDECAR = """
+    design:
+      indoor_heating_f: 70
+      outdoor_heating_99_f: 15
+      supply_air_rise_f: 50
+    infiltration:
+      ach: 0.5
+    assemblies:
+      exterior_wall: 0.09
+      window: 0.30
+"""
+
+
+def _write_and_load(tmp_path, body):
+    return sidecar.load_sidecar(_write(tmp_path, body))
+
+
 def test_load_sidecar_ok(tmp_path):
     path = _write(tmp_path, """
         design:
@@ -297,3 +314,38 @@ def test_walls_rejects_unhashable_boundary(tmp_path):
     body = _VALID + "    walls:\n      wall-abc: {boundary: [a, b]}\n"
     with pytest.raises(ValueError, match="boundary"):
         sidecar.load_sidecar(_write(tmp_path, body))
+
+
+def test_spaces_block_optional(tmp_path):
+    assert _write_and_load(tmp_path, BASE_SIDECAR).spaces == {}
+
+
+def test_spaces_block_parsed(tmp_path):
+    sc = _write_and_load(tmp_path, BASE_SIDECAR + """
+    spaces:
+      crawlspace:
+        winter_temp_f: 32
+      attic:
+        vented: false
+      garage:
+        factor: 0.25
+""")
+    assert sc.spaces["crawlspace"].winter_temp_f == 32.0
+    assert sc.spaces["attic"].vented is False
+    assert sc.spaces["garage"].factor == 0.25
+
+
+def test_spaces_rejects_non_mapping_spec(tmp_path):
+    with pytest.raises(ValueError, match=r"spaces\['attic'\]"):
+        _write_and_load(tmp_path, BASE_SIDECAR + "\n    spaces:\n      attic: 0.5\n")
+
+
+def test_spaces_rejects_bad_factor(tmp_path):
+    with pytest.raises(ValueError, match="factor"):
+        _write_and_load(tmp_path, BASE_SIDECAR + "\n    spaces:\n      attic:\n        factor: -1\n")
+
+
+def test_spaces_rejects_non_boolean_vented(tmp_path):
+    with pytest.raises(ValueError, match="vented"):
+        _write_and_load(tmp_path, BASE_SIDECAR
+                        + "\n    spaces:\n      attic:\n        vented: sometimes\n")

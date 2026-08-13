@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import math
 import yaml
-from eldr import ductd
+from eldr import ductd, spaces as spaces_mod
 
 # Deep soil temperature (°F) a below-grade surface is coupled to when the side-car
 # doesn't specify one. Roughly the annual-mean air temp for a temperate US climate.
@@ -79,6 +79,8 @@ class SideCar:
     # explicit per-wall boundary overrides: SH3D wall id -> one of WALL_BOUNDARIES.
     # Untagged walls fall back to geometric inference.
     wall_boundaries: dict[str, str] = field(default_factory=dict)
+    # buffer-space temperature policies, keyed by space name (attic / crawlspace / ...)
+    spaces: dict[str, spaces_mod.SpacePolicy] = field(default_factory=dict)
 
 
 def _require(d: dict, key: str, ctx: str):
@@ -174,6 +176,24 @@ def load_sidecar(path: str) -> SideCar:
                 raise ValueError(f"walls['{wid}'].boundary must be one of "
                                  f"{sorted(WALL_BOUNDARIES)} (got {boundary!r})")
             wall_boundaries[str(wid)] = boundary
+    spaces_raw = raw.get("spaces")
+    if spaces_raw is not None and not isinstance(spaces_raw, dict):
+        raise ValueError("spaces must be a mapping of space-name -> policy")
+    space_policies: dict[str, spaces_mod.SpacePolicy] = {}
+    for name, spec in (spaces_raw or {}).items():
+        if not isinstance(spec, dict):
+            raise ValueError(f"spaces['{name}'] must be a mapping "
+                             f"(winter_temp_f / summer_temp_f / factor / vented)")
+        vented = spec.get("vented")
+        if vented is not None and not isinstance(vented, bool):
+            raise ValueError(f"spaces['{name}'].vented must be true or false")
+        space_policies[str(name)] = spaces_mod.SpacePolicy(
+            name=str(name),
+            winter_temp_f=_optional_number(spec, "winter_temp_f", f"spaces['{name}']"),
+            summer_temp_f=_optional_number(spec, "summer_temp_f", f"spaces['{name}']"),
+            factor=_optional_number(spec, "factor", f"spaces['{name}']"),
+            vented=vented,
+        )
     sc = SideCar(
         assemblies={k: float(v) for k, v in _require(raw, "assemblies", "root").items()},
         design=DesignConditions(
@@ -188,6 +208,7 @@ def load_sidecar(path: str) -> SideCar:
         cooling=cooling,
         ducts=ducts,
         wall_boundaries=wall_boundaries,
+        spaces=space_policies,
     )
     _validate(sc)
     return sc
@@ -245,3 +266,10 @@ def _validate(sc: SideCar) -> None:
         for run in sc.ducts.runs:
             if not math.isfinite(run.cfm) or run.cfm <= 0:
                 raise ValueError(f"ducts.run '{run.name}': cfm must be finite and > 0")
+    for name, p in sc.spaces.items():
+        for label, val in (("winter_temp_f", p.winter_temp_f), ("summer_temp_f", p.summer_temp_f),
+                           ("factor", p.factor)):
+            if val is not None and not math.isfinite(val):
+                raise ValueError(f"spaces['{name}'].{label} must be a finite number")
+        if p.factor is not None and p.factor < 0:
+            raise ValueError(f"spaces['{name}'].factor must be >= 0")
