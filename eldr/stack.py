@@ -92,17 +92,87 @@ def _inside(x, y, points):
     return hit
 
 
-def _seg_distance(px, py, x1, y1, x2, y2):
-    dx, dy = x2 - x1, y2 - y1
-    if dx == 0.0 and dy == 0.0:
-        return ((px - x1) ** 2 + (py - y1) ** 2) ** 0.5
-    t = max(0.0, min(1.0, ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)))
-    return ((px - (x1 + t * dx)) ** 2 + (py - (y1 + t * dy)) ** 2) ** 0.5
+def _nearest_within(ix, iy, candidates, step_x, step_y, tolerance_cm):
+    """The cell of `candidates` nearest to cell (ix, iy), or None past `tolerance_cm`.
+
+    Distance is measured between the cells themselves — the Euclidean gap between their
+    extents — not between their centres, and that distinction is load-bearing. A cell
+    only samples what is under its centre, so centre-to-centre overstates how far a cell
+    is from what is drawn beside it by up to a full cell. On a one-cell-wide misalignment
+    ring the corner cells sit 21.5cm diagonally from the nearest covered centre, past a
+    20cm tolerance, and would read as genuine void while their neighbours all dissolve —
+    the ring loses its sides and keeps its corners. Touching cells have a gap of zero.
+
+    Only the index window the tolerance can reach is scanned, so settling the voids stays
+    linear in cell count rather than quadratic. Ties break on centre distance, which is
+    what makes an orthogonal neighbour outrank a diagonal one when both touch.
+    """
+    if not candidates:
+        return None
+    rx = int(tolerance_cm / step_x) + 2      # +1 for the gap metric's extra reach, +1 to round up
+    ry = int(tolerance_cm / step_y) + 2
+    best = None
+    best_rank = None
+    for jy in range(iy - ry, iy + ry + 1):
+        for jx in range(ix - rx, ix + rx + 1):
+            if (jx, jy) not in candidates:
+                continue
+            gx = max(0, abs(jx - ix) - 1) * step_x
+            gy = max(0, abs(jy - iy) - 1) * step_y
+            gap = (gx * gx + gy * gy) ** 0.5
+            if gap > tolerance_cm:
+                continue
+            dx, dy = (jx - ix) * step_x, (jy - iy) * step_y
+            rank = (gap, (dx * dx + dy * dy) ** 0.5)
+            if best_rank is None or rank < best_rank:
+                best_rank = rank
+                best = (jx, jy)
+    return best
 
 
-def _edge_distance(px, py, points):
-    n = len(points)
-    return min(_seg_distance(px, py, *points[i], *points[(i + 1) % n]) for i in range(n))
+def _settle_voids(cells, step_x, step_y, cell_ft2, tolerance_cm, void_name):
+    """Separate real exposure from wall misalignment among a floor's uncovered cells.
+
+    `cells` maps a raster index to the category resolved beneath it, or None where
+    nothing was drawn. Returns (areas by category, measured area of surviving void).
+
+    The tolerance is applied to the VOID REGION's own boundary, never to the room's
+    outline. A misalignment artifact is at most a wall thickness wide, so every one of
+    its cells sits within tolerance of real coverage and the whole artifact is reabsorbed
+    into whatever is drawn beside it. A genuine void — undrawn crawlspace under an
+    extension — is fat, so its core is out of reach and survives. Measuring against the
+    room's outline instead would eat a tolerance-wide band off every side of a real void
+    that happens to touch the room's edge, which is most of them.
+
+    Erosion alone would still shave the rim where a real void meets real coverage, and
+    that loss is one-directional: it always moves area from the void to a neighbour,
+    understating exactly the crawlspace-facing floor this resolver exists to find. So the
+    eroded core is dilated back over the void by the same tolerance — a morphological
+    opening — which deletes thin artifacts outright while leaving fat voids whole.
+
+    Nothing is discarded. A reassigned cell goes to the category of the nearest covered
+    cell, because misalignment means it belongs to whatever it was mismeasured against.
+    A room's floor therefore cannot lose area, however badly its walls are aligned.
+    """
+    void = {k for k, v in cells.items() if v is None}
+    covered = {k for k, v in cells.items() if v is not None}
+    core = {k for k in void
+            if _nearest_within(k[0], k[1], covered, step_x, step_y, tolerance_cm) is None}
+    survives = {k for k in void
+                if _nearest_within(k[0], k[1], core, step_x, step_y, tolerance_cm) is not None}
+
+    areas: dict[str, float] = {}
+    for key, cat in cells.items():
+        if cat is None:
+            if key in survives:
+                cat = void_name
+            else:
+                # Not in the core and not near it: an artifact. It belongs to the nearest
+                # thing actually drawn, which exists — that is why it failed the core test.
+                cat = cells[_nearest_within(key[0], key[1], covered,
+                                            step_x, step_y, tolerance_cm)]
+        areas[cat] = areas.get(cat, 0.0) + cell_ft2
+    return areas, len(survives) * cell_ft2
 
 
 def _covering_room(x, y, rooms):
@@ -193,9 +263,8 @@ def resolve_faces(levels: list[LevelInfo], rooms_by_level: dict[str, list[dict]]
         for room in rooms[level.id]:
             if not room["conditioned"]:
                 continue
-            below: dict[str, float] = {}
+            below_cells: dict[tuple[int, int], str | None] = {}   # None marks a void cell
             above: dict[str, float] = {}
-            void_cells = []
             minx, maxx, miny, maxy = room["_bbox"]
             # Whole number of cells covering the bounding box EXACTLY, each about
             # grid_cm across. Stepping a fixed grid_cm from minx instead would leave a
@@ -213,31 +282,27 @@ def resolve_faces(levels: list[LevelInfo], rooms_by_level: dict[str, list[dict]]
                     cx = minx + (ix + 0.5) * step_x
                     if not _inside(cx, cy, room["points"]):
                         continue
-                    for neighbours, bucket, is_below in (
-                            (others_below, below, True),
-                            (others_above, above, False)):
+                    for neighbours, is_below in ((others_below, True),
+                                                 (others_above, False)):
                         found = None
                         for cand in neighbours:
                             hit = _covering_room(cx, cy, rooms[cand.id])
                             if hit is not None:
+                                # The ROOM's flag decides, not its level's: a level marked
+                                # unconditioned can still hold a conditioned room.
                                 found = ("interior" if hit["conditioned"]
                                          else _space_name(by_id[cand.id]))
                                 break
-                        if found is None:
-                            if is_below and level.id == lowest_conditioned:
+                        if is_below:
+                            if found is None and level.id == lowest_conditioned:
                                 found = "ground"
-                            elif is_below:
-                                void_cells.append((cx, cy))
-                                continue
-                            else:
-                                found = this_above_void
-                        bucket[found] = bucket.get(found, 0.0) + cell_ft2
+                            below_cells[(ix, iy)] = found      # None => nothing drawn
+                        else:
+                            found = found or this_above_void
+                            above[found] = above.get(found, 0.0) + cell_ft2
 
-            real_void = [c for c in void_cells
-                         if _edge_distance(c[0], c[1], room["points"]) > tolerance_cm]
-            void_ft2 = len(real_void) * cell_ft2
-            if void_ft2 > 0.0:
-                below[this_below_void] = below.get(this_below_void, 0.0) + void_ft2
+            below, void_ft2 = _settle_voids(below_cells, step_x, step_y, cell_ft2,
+                                            tolerance_cm, this_below_void)
 
             # void_below_ft2 stays as MEASURED — it is the raster's own estimate of a
             # schematic gap, reported so the warning means something, not a share of a
