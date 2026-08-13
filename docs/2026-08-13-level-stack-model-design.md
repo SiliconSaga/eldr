@@ -109,6 +109,8 @@ Extending the wall-boundary table to horizontal surfaces:
 
 A conditioned room above another conditioned room emits **no** horizontal surface — that is the interior case, and it is why the resolver must distinguish "conditioned below" from "nothing below."
 
+`Surface` gains an optional `space: str | None` field carrying *which* buffer space the surface faces, because a category alone can no longer determine ΔT once policies are per-space — a `buffer_floor` over the crawl and one over the garage are the same category with different factors. The ΔT resolvers in `loads.py` therefore take the `Surface` rather than its category string. The field defaults to `None`, so every existing construction site keeps working.
+
 Assembly fallbacks matter for compatibility: an existing side-car declaring only `floor` keeps working, and a buffer floor borrows that U rather than erroring. The Refrhus reconciliation will set `buffer_floor` explicitly to the professionals' measured U-0.521 for the uninsulated crawl floor, against `floor`'s slab U-0.020 — a 26× difference, which is exactly why they need separate keys.
 
 ## `stack.py` — adjacency resolution
@@ -121,7 +123,9 @@ resolve_stack(levels, rooms, tolerance_cm=20.0, min_region_ft2=2.0) -> StackReso
 
 Algorithm, per conditioned room, for its bottom face and again for its top face:
 
-1. Order levels by `(elevation, elevationIndex)`. Drop **scaffolding levels** — those with no rooms — and any level the side-car marks `role: ignore`.
+1. Order levels by `(elevation, elevationIndex)`. Drop **scaffolding levels** and any level the side-car marks `role: ignore`.
+
+   A scaffolding level is one with no rooms — **but only when some other level in the model does have rooms.** The guard matters: Eldr supports models with no rooms at all (the bounding-box fallback documented in the README, and the shape of the existing test fixture), and without it every level in such a model would be classified as scaffolding, yielding a house with no floor, no ceiling and no volume. So: if the model has no rooms anywhere, the whole stack resolver stands down and the legacy bounding-box path handles the envelope exactly as it does today. Room-bearing models get the new resolution; roomless ones are untouched.
 2. Rasterize the room polygon. For each cell, scan outward through the ordered levels (down for the floor face, up for the ceiling face) and take the **first** level carrying a room that covers that cell. Scanning past non-overlapping levels is what makes the garage's vertical overlap harmless.
 3. Classify each cell by what it found: a conditioned room → `interior`; an unconditioned level's room → that level's space name; nothing at all → `void`.
 4. Discard void cells within `tolerance_cm` of the room's own outline as misalignment.
@@ -201,6 +205,7 @@ TDD throughout, following the existing suite's shape. The cases that matter:
 
 - **Ordering:** two levels sharing an elevation resolve by `elevationIndex`.
 - **Scaffolding:** a roomless level is skipped for adjacency *and* volume — including the variant that carries a wall, which is the case that currently leaks.
+- **Roomless model:** a model with no rooms anywhere keeps the legacy bounding-box envelope unchanged. This is a regression guard on existing behavior, not new capability.
 - **Vertical overlap is not adjacency:** a garage-shaped level overlapping a conditioned level's vertical span but not its footprint contributes nothing.
 - **Area split:** one room over two different levels splits proportionally (the Kitchen shape).
 - **Interior suppression:** conditioned over conditioned emits no surface.
