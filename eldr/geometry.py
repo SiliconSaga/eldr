@@ -405,10 +405,17 @@ def extract_envelope(home_path: str, wall_boundaries: dict[str, str] | None = No
                               key=lambda r: _dist_point_to_polygon_cm(sx, sy, r["points"]))["id"]
                     g = room_gross_wall[rid]
                     g[cat] = g.get(cat, 0.0) + share
-        # volume from footprint x height
-        footprint = (maxx - minx) * (maxy - miny)
-        volume_ft3 += (units.cm_to_ft(maxx - minx) * units.cm_to_ft(maxy - miny)
-                       * units.cm_to_ft(_f(lv, "height")))
+        # Conditioned volume for infiltration: sum conditioned-room floor area x height.
+        # A level with only UNconditioned rooms (garage/crawlspace) contributes nothing —
+        # it isn't part of the conditioned envelope the air leaks into. A roomless level
+        # falls back to the bounding box (matches the wall-inference fallback), so a
+        # conditioned floor not yet drawn as rooms still counts.
+        height_ft = units.cm_to_ft(_f(lv, "height"))
+        cond_area_ft2 = sum(r["area_ft2"] for r in conditioned_here)
+        if cond_area_ft2 > 0:
+            volume_ft3 += cond_area_ft2 * height_ft
+        elif not rooms_here:
+            volume_ft3 += units.cm_to_ft(maxx - minx) * units.cm_to_ft(maxy - miny) * height_ft
 
     # An opening belongs to the envelope only if it sits on EXACTLY ONE exterior/
     # basement wall: within half-thickness + tolerance of the segment, projecting

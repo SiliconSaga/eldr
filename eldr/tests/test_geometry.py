@@ -406,3 +406,50 @@ def test_adaptive_sampling_gives_narrow_room_its_facade_share(tmp_path):
     # its own west wall is 500×300; density sampling must add a slice of the north
     # facade on top, so its exterior wall exceeds the west-wall-only area.
     assert narrow["exterior_wall"] > units.sqcm_to_sqft(500 * 300)
+
+
+MULTI_LEVEL_FIXTURE = textwrap.dedent("""\
+<?xml version='1.0'?>
+<home version='7400' name='t' wallHeight='300'>
+  <level id='LB' name='Basement' elevation='0.0' floorThickness='12.0' height='200' elevationIndex='0'/>
+  <level id='LG' name='Garage' elevation='0.0' floorThickness='12.0' height='300' elevationIndex='1'/>
+  <level id='LM' name='Main' elevation='212.0' floorThickness='12.0' height='250' elevationIndex='0'/>
+  <wall id='b-n' level='LB' xStart='0' yStart='0' xEnd='400' yEnd='0' height='200' thickness='10'/>
+  <wall id='b-s' level='LB' xStart='0' yStart='300' xEnd='400' yEnd='300' height='200' thickness='10'/>
+  <wall id='b-w' level='LB' xStart='0' yStart='0' xEnd='0' yEnd='300' height='200' thickness='10'/>
+  <wall id='b-e' level='LB' xStart='400' yStart='0' xEnd='400' yEnd='300' height='200' thickness='10'/>
+  <wall id='g-n' level='LG' xStart='500' yStart='0' xEnd='900' yEnd='0' height='300' thickness='10'/>
+  <wall id='g-s' level='LG' xStart='500' yStart='300' xEnd='900' yEnd='300' height='300' thickness='10'/>
+  <wall id='g-w' level='LG' xStart='500' yStart='0' xEnd='500' yEnd='300' height='300' thickness='10'/>
+  <wall id='g-e' level='LG' xStart='900' yStart='0' xEnd='900' yEnd='300' height='300' thickness='10'/>
+  <wall id='m-n' level='LM' xStart='0' yStart='0' xEnd='400' yEnd='0' height='250' thickness='10'/>
+  <wall id='m-s' level='LM' xStart='0' yStart='300' xEnd='400' yEnd='300' height='250' thickness='10'/>
+  <wall id='m-w' level='LM' xStart='0' yStart='0' xEnd='0' yEnd='300' height='250' thickness='10'/>
+  <wall id='m-e' level='LM' xStart='400' yStart='0' xEnd='400' yEnd='300' height='250' thickness='10'/>
+  <room id='rb' level='LB' name='Basement Room'>
+    <point x='0' y='0'/><point x='400' y='0'/><point x='400' y='300'/><point x='0' y='300'/>
+  </room>
+  <room id='rg' level='LG' name='Garage'>
+    <point x='500' y='0'/><point x='900' y='0'/><point x='900' y='300'/><point x='500' y='300'/>
+  </room>
+  <room id='rm' level='LM' name='Living room'>
+    <point x='0' y='0'/><point x='400' y='0'/><point x='400' y='300'/><point x='0' y='300'/>
+  </room>
+</home>
+""")
+
+
+def test_volume_counts_conditioned_rooms_only(tmp_path):
+    """The garage level must not inflate the infiltration volume.
+
+    Before the fix, volume came from each level's wall bounding box, so the
+    garage (a whole extra 400x300 footprint at 300cm) was counted as if it were
+    conditioned space the air leaks into -- roughly doubling infiltration.
+    """
+    p = tmp_path / "Home.xml"
+    p.write_text(MULTI_LEVEL_FIXTURE)
+    env = geometry.extract_envelope(str(p))
+    from eldr import units
+    expected = (units.sqcm_to_sqft(400 * 300) * units.cm_to_ft(200)      # basement
+                + units.sqcm_to_sqft(400 * 300) * units.cm_to_ft(250))   # main
+    assert abs(env.volume_ft3 - expected) < 1e-6
