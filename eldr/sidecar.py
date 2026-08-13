@@ -13,6 +13,19 @@ DEFAULT_GROUND_TEMP_F = 50.0
 # `buffer` (garage/crawl-adjacent) can only come from a tag — geometry can't infer it.
 WALL_BOUNDARIES = frozenset({"exterior", "ground", "buffer", "interior"})
 
+# Roles a level may be assigned. Deliberately NO `buffer`: buffer-ness belongs to a
+# space's temperature policy (see spaces.py), not to a level. An unconditioned level
+# simply becomes a named space; how it is treated thermally is decided in `spaces:`.
+LEVEL_ROLES = frozenset({"conditioned", "unconditioned", "ignore"})
+
+
+@dataclass(frozen=True)
+class LevelSpec:
+    role: str | None = None
+    height_ft: float | None = None
+    below_void: str | None = None
+    above_void: str | None = None
+
 
 @dataclass(frozen=True)
 class DesignConditions:
@@ -81,6 +94,8 @@ class SideCar:
     wall_boundaries: dict[str, str] = field(default_factory=dict)
     # buffer-space temperature policies, keyed by space name (attic / crawlspace / ...)
     spaces: dict[str, spaces_mod.SpacePolicy] = field(default_factory=dict)
+    # per-level overrides keyed by the level's SH3D *name* (role / height / void naming)
+    levels: dict[str, LevelSpec] = field(default_factory=dict)
 
 
 def _require(d: dict, key: str, ctx: str):
@@ -194,6 +209,26 @@ def load_sidecar(path: str) -> SideCar:
             factor=_optional_number(spec, "factor", f"spaces['{name}']"),
             vented=vented,
         )
+    levels_raw = raw.get("levels")
+    if levels_raw is not None and not isinstance(levels_raw, dict):
+        raise ValueError("levels must be a mapping of level-name -> spec")
+    level_specs: dict[str, LevelSpec] = {}
+    for name, spec in (levels_raw or {}).items():
+        if not isinstance(spec, dict):
+            raise ValueError(f"levels['{name}'] must be a mapping "
+                             f"(role / height_ft / below_void / above_void)")
+        role = spec.get("role")
+        if role is not None and (not isinstance(role, str) or role not in LEVEL_ROLES):
+            raise ValueError(f"levels['{name}'].role must be one of {sorted(LEVEL_ROLES)} "
+                             f"(got {role!r})")
+        height_ft = _optional_number(spec, "height_ft", f"levels['{name}']")
+        if height_ft is not None and (not math.isfinite(height_ft) or height_ft <= 0):
+            raise ValueError(f"levels['{name}'].height_ft must be a finite number > 0")
+        level_specs[str(name)] = LevelSpec(
+            role=role, height_ft=height_ft,
+            below_void=None if spec.get("below_void") is None else str(spec["below_void"]),
+            above_void=None if spec.get("above_void") is None else str(spec["above_void"]),
+        )
     sc = SideCar(
         assemblies={k: float(v) for k, v in _require(raw, "assemblies", "root").items()},
         design=DesignConditions(
@@ -209,6 +244,7 @@ def load_sidecar(path: str) -> SideCar:
         ducts=ducts,
         wall_boundaries=wall_boundaries,
         spaces=space_policies,
+        levels=level_specs,
     )
     _validate(sc)
     return sc

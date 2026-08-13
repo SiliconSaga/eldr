@@ -349,3 +349,35 @@ def test_spaces_rejects_non_boolean_vented(tmp_path):
     with pytest.raises(ValueError, match="vented"):
         _write_and_load(tmp_path, BASE_SIDECAR
                         + "\n    spaces:\n      attic:\n        vented: sometimes\n")
+
+
+def test_levels_block_optional(tmp_path):
+    assert _write_and_load(tmp_path, BASE_SIDECAR).levels == {}
+
+
+def test_levels_block_parsed(tmp_path):
+    sc = _write_and_load(tmp_path, BASE_SIDECAR + """
+    levels:
+      Main:
+        height_ft: 8.5
+        below_void: crawlspace
+      Garage:
+        role: unconditioned
+      scaffold:
+        role: ignore
+""")
+    assert sc.levels["Main"].height_ft == 8.5
+    assert sc.levels["Main"].below_void == "crawlspace"
+    assert sc.levels["Garage"].role == "unconditioned"
+    assert sc.levels["scaffold"].role == "ignore"
+
+
+def test_levels_rejects_unknown_role(tmp_path):
+    with pytest.raises(ValueError, match="role"):
+        _write_and_load(tmp_path, BASE_SIDECAR + "\n    levels:\n      Main:\n        role: buffer\n")
+
+
+def test_levels_rejects_bad_height(tmp_path):
+    with pytest.raises(ValueError, match="height_ft"):
+        _write_and_load(tmp_path, BASE_SIDECAR
+                        + "\n    levels:\n      Main:\n        height_ft: 0\n")

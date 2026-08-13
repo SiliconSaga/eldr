@@ -227,12 +227,15 @@ def test_room_ceiling_floor_and_metadata(tmp_path):
     p = tmp_path / "Home.xml"
     p.write_text(ROOM_FIXTURE)
     env = geometry.extract_envelope(str(p))
-    # Main is the top level -> its rooms get a ceiling, not a floor
+    # Nothing is drawn above Main -> its rooms face the attic; West sits over the
+    # garage, so its floor is a `buffer_floor`, never a ground-coupled `floor`.
     west = _rcat(_room(env, "West"))
     assert "ceiling" in west and "floor" not in west
-    # Garage is the bottom level -> its room gets a floor, not a ceiling
+    assert abs(west["buffer_floor"] - west["ceiling"]) < 1e-6
+    # CHANGED (stack model): the garage room is unconditioned, so the resolver gives it
+    # no faces at all — its slab was never a surface of the *conditioned* envelope.
     gar = _rcat(_room(env, "Gar"))
-    assert "floor" in gar and "ceiling" not in gar
+    assert gar == {}
     # furniture + level elevations exposed
     assert any(f.name == "Air Handler" for f in env.furniture)
     assert env.level_elevations["L1"] == 100.0 and env.level_elevations["LG"] == 0.0
@@ -245,7 +248,11 @@ def test_unconditioned_room_walls_excluded_from_envelope(tmp_path):
     env = geometry.extract_envelope(str(p))
     gar = _rcat(_room(env, "Gar"))
     assert "exterior_wall" not in gar and "basement_wall" not in gar   # its walls dropped
-    assert "floor" in gar                                              # still the bottom-level floor
+    # CHANGED (stack model): its floor is dropped too. The garage is unconditioned, so
+    # the conditioned rooms *above* it now carry that boundary as a `buffer_floor`.
+    assert "floor" not in gar
+    assert sum(v for r in env.rooms if r.conditioned
+               for k, v in _rcat(r).items() if k == "buffer_floor") > 0
     # whole-house exterior wall == the conditioned rooms' walls only (garage excluded)
     whole = sum(s.area_ft2 for s in env.surfaces if s.category == "exterior_wall")
     cond = sum(v for r in env.rooms if r.conditioned
@@ -452,4 +459,81 @@ def test_volume_counts_conditioned_rooms_only(tmp_path):
     from eldr import units
     expected = (units.sqcm_to_sqft(400 * 300) * units.cm_to_ft(200)      # basement
                 + units.sqcm_to_sqft(400 * 300) * units.cm_to_ft(250))   # main
+    assert abs(env.volume_ft3 - expected) < 1e-6
+
+
+def test_main_floor_over_basement_emits_no_surface(tmp_path):
+    """Conditioned over conditioned is interior — no horizontal surface at all."""
+    p = tmp_path / "Home.xml"
+    p.write_text(MULTI_LEVEL_FIXTURE)
+    env = geometry.extract_envelope(str(p))
+    main = next(r for r in env.rooms if r.name == "Living room")
+    assert not [s for s in main.surfaces if s.category in ("floor", "buffer_floor")]
+
+
+def test_top_room_ceiling_faces_the_attic(tmp_path):
+    p = tmp_path / "Home.xml"
+    p.write_text(MULTI_LEVEL_FIXTURE)
+    env = geometry.extract_envelope(str(p))
+    main = next(r for r in env.rooms if r.name == "Living room")
+    ceil = next(s for s in main.surfaces if s.category == "ceiling")
+    assert ceil.space == "attic"
+
+
+def test_whole_house_horizontals_equal_the_sum_of_room_horizontals(tmp_path):
+    """Whole-house surfaces used level bounding boxes while per-room used polygons,
+    so the two disagreed. They are now the same resolution by construction."""
+    p = tmp_path / "Home.xml"
+    p.write_text(MULTI_LEVEL_FIXTURE)
+    env = geometry.extract_envelope(str(p))
+    horizontals = {"ceiling", "floor", "buffer_floor", "exposed_floor"}
+    for cat in horizontals:
+        whole = sum(s.area_ft2 for s in env.surfaces if s.category == cat)
+        rooms = sum(s.area_ft2 for r in env.rooms for s in r.surfaces if s.category == cat)
+        assert abs(whole - rooms) < 1e-6, cat
+
+
+def test_roomless_model_keeps_the_bounding_box_envelope(tmp_path):
+    """Regression guard: the legacy fallback must survive the stack model."""
+    p = tmp_path / "Home.xml"
+    p.write_text(FIXTURE)                     # the original walls-only fixture
+    env = geometry.extract_envelope(str(p))
+    cats = _by_cat(env)
+    from eldr import units
+    foot = units.sqcm_to_sqft(1000 * 500)
+    assert abs(cats["ceiling"] - foot) < 1e-6
+    assert abs(cats["floor"] - foot) < 1e-6
+
+
+def test_sidecar_level_height_override_changes_volume(tmp_path):
+    from eldr import sidecar as sc_mod
+    p = tmp_path / "Home.xml"
+    p.write_text(MULTI_LEVEL_FIXTURE)
+    base = geometry.extract_envelope(str(p))
+    tall = geometry.extract_envelope(
+        str(p), levels={"Main": sc_mod.LevelSpec(height_ft=20.0)})
+    assert tall.volume_ft3 > base.volume_ft3
+
+
+def test_scaffolding_level_with_a_wall_adds_no_volume(tmp_path):
+    """A roomless level carrying a wall (a modeled duct chase) must not inject
+    bounding-box volume into infiltration.
+
+    The chase needs TWO non-parallel walls: a single wall's bounding box has zero
+    area, so it would contribute nothing anyway and the test could never fail.
+    """
+    p = tmp_path / "Home.xml"
+    p.write_text(MULTI_LEVEL_FIXTURE.replace(
+        "  <room id='rb'",
+        "  <level id='LT' name='transition' elevation='210.0' floorThickness='2.0'"
+        " height='30' elevationIndex='0'/>\n"
+        "  <wall id='t-n' level='LT' xStart='0' yStart='0' xEnd='400' yEnd='0'"
+        " height='30' thickness='10'/>\n"
+        "  <wall id='t-e' level='LT' xStart='400' yStart='0' xEnd='400' yEnd='300'"
+        " height='30' thickness='10'/>\n"
+        "  <room id='rb'"))
+    env = geometry.extract_envelope(str(p))
+    from eldr import units
+    expected = (units.sqcm_to_sqft(400 * 300) * units.cm_to_ft(200)
+                + units.sqcm_to_sqft(400 * 300) * units.cm_to_ft(250))
     assert abs(env.volume_ft3 - expected) < 1e-6
