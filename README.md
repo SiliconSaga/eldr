@@ -42,7 +42,12 @@ Three other output modes:
 
 `--overview` renders the same numbers as the report, wrapped in a deterministic narrative (ACCA-chain intro, honesty caveats auto-selected from the model, roadmap) — so the demo write-up never drifts from the engine. `--json` emits the same computation as machine-readable data (design, loads by category, Manual S, every room, every duct run, plus `levels`, `spaces`, `voids` and `surfaces` — the level stack and the horizontal split, so a consumer never has to re-derive them) — for a UI, a spreadsheet, or grounding an "ask the house" chatbot in exact values. The output modes are mutually exclusive.
 
-In the JSON, `spaces.<name>.cooling_factor` is the fraction of the cooling design ΔT the engine **applied**, which for the attic is not the fraction the side-car declared — see [Buffer spaces](#buffer-spaces-and-their-temperatures) below. `voids` is present even when empty, so a consumer can tell "no gaps" from "an export predating the key".
+The four level-stack keys in the JSON:
+
+- `levels` — `{level_name: {height_ft}}`, the storey height each level actually used.
+- `spaces` — `{space_name: {heating_factor, cooling_factor}}`. `cooling_factor` is the fraction of the cooling design ΔT the engine **applied**, which for the attic is not the fraction the side-car declared — see [Buffer spaces](#buffer-spaces-and-their-temperatures) below. `heating_factor` *is* the declared policy's; only summer is substituted. `cooling_factor` is `null` exactly when the side-car has no `cooling:` block (a heating-only run) — with a `cooling:` block it is always a number, because the pipeline resolves `outdoor_1_f` from the model's lat/long or raises before the export runs.
+- `voids` — `{room_name: area_ft2}`, present even when empty, so a consumer can tell "no gaps" from "an export predating the key".
+- `surfaces` — `[{category, area_ft2, space}]`, one entry per envelope surface. `space` is `null` for anything not facing a buffer space (every wall, window, door, and an on-grade `floor`).
 
 ## The side-car
 
@@ -90,6 +95,8 @@ A *space* is a named unconditioned volume next to conditioned rooms — an attic
 
 Temperature wins because "the crawl gets near freezing on the coldest days" is a stronger claim to hand an HVAC partner than "we assumed 50% of ΔT", and it short-circuits chains that would otherwise need modeling (a crawlspace partly vented to outdoors *and* open into the garage).
 
+**A space name Eldr does not recognize falls silently to rung 4.** Unlike an unknown level name in `levels:`, which warns, a space that matches neither a `spaces:` entry nor a built-in default just gets a bare policy — so a `below_void: crawlspce` typo, or an unconditioned level renamed in SH3D, quietly loads at 0.5 with nothing said. The report's *Buffer spaces* table is the check: its **Winter input** column reads "no policy declared" for exactly this case, so scan it for a space name you did not expect.
+
 `factor` and `vented` are **winter** shorthands, and both cap a space at or below outdoor air — which is backwards for a sunlit attic in summer. So unless `spaces.attic.summer_temp_f` says otherwise, the attic's cooling ΔT comes from a real temperature: `cooling.attic_temp_f` if set, else a **sol-air estimate** of `outdoor_1_f + 50 °F × 0.85 roof absorptance`. On Refrhus that is 91 + 42.5 = **133.5 °F**, a cooling factor of 3.66 — the least obvious number the engine produces, and the reason a ceiling can load at several times the outdoor ΔT. The report's *Buffer spaces* table prints the temperature and factor each space actually got, and says whether it was observed or estimated. The estimate is deliberately crude: a flat solar uplift, no roof area, orientation, ventilation rate or radiant barrier. Set `cooling.attic_temp_f` to replace it with an observed value.
 
 Note the built-in `attic` default of `vented: false` **diverges from typical ACCA practice**, which loads a vented attic at full outdoor temperature for heating. It follows the Refrhus owner's observation of their own house; declare `vented: true` to restore ACCA behavior. The report echoes which was used.
@@ -123,6 +130,6 @@ Tests are TDD-first and live in [`eldr/tests/`](eldr/tests/). The engine is UI-a
 
 ## Scope & roadmap
 
-Built: heating, cooling (orientation-resolved solar), Manual S, direct `.sh3d` read, lat/long → design-station lookup, per-room loads (Manual J 1c), Manual D duct sizing from the model, and the level-stack model — partial ceilings resolved against what is actually above each room, buffer and exposed floors resolved against what is below, per-space temperature policies, hot-attic cooling gain, and the assumption echoes (level heights, space factors, borrowed U-values, schematic gaps) that keep all of it from being silent.
+Built: heating, cooling (orientation-resolved solar), Manual S, direct `.sh3d` read, lat/long → design-station lookup, per-room loads (Manual J 1c), Manual D duct sizing from the model, and the level-stack model — partial ceilings resolved against what is actually above each room, buffer floors resolved against what is below (and exposed floors, but **provisionally** — see above: nothing infers one, so it needs an explicit `below_void: outdoor`), per-space temperature policies, hot-attic cooling gain, and the assumption echoes (level heights, space factors, borrowed U-values, schematic gaps) that keep all of it from being silent.
 
 Ahead: a real attic energy balance (roof area, ventilation rate, radiant barrier) and orientation-aware sol-air, replacing the flat solar uplift; sloped-roof and knee-wall geometry; partial height/length splits within one wall; true fitting equivalent lengths (drop the fitting-factor fudge) and return-duct sizing; an interview skill that fills the side-car by asking the owner; a Sweet Home 3D plugin wrapping the same engine; and the path to ACCA-certifiable output. Design + phasing: `realm-siliconsaga` `docs/plans/2026-07-15-eldr-manual-j-design.md`; the level-stack cut is `docs/2026-08-13-level-stack-model-design.md`.

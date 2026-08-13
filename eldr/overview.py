@@ -109,10 +109,13 @@ def _honesty(a) -> str:
                        "the *Buffer spaces* table above prints the factor and temperature "
                        "each surface actually got.")
     if a.env.voids:
-        # `buffer_floor` in code font, matching the borrow bullet above it, so a reader
-        # can see the two caveats are about the same floor rather than two floors.
+        # The category in code font, matching the borrow bullet above it, so a reader can
+        # see the two caveats are about the same floor rather than two floors — and read
+        # off the ENVELOPE, not hardcoded: `below_void: outdoor` makes it `exposed_floor`
+        # at the full outdoor ΔT, and claiming "buffer" there understates the load.
+        as_what = ", ".join(f"`{c}`" for c in report._void_categories(a.env)) or "buffer floor"
         bullets.append(f"**{sum(a.env.voids.values()):,.1f} ft² of conditioned floor has no "
-                       "level drawn beneath it** — modeled as `buffer_floor` over undrawn "
+                       f"level drawn beneath it** — modeled as {as_what} over undrawn "
                        "space. That is a gap in the drawing, not a measurement; draw those "
                        "spaces and the assumption is replaced by geometry.")
     if a.duct_plan is not None and a.duct_plan.unit is None:

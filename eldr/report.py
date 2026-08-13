@@ -114,10 +114,12 @@ def _levels_block(env: geometry_mod.Envelope, sc: sidecar.SideCar) -> list[str]:
 def _spaces_block(env: geometry_mod.Envelope, sc: sidecar.SideCar) -> list[str]:
     """Every buffer space a surface faces, with the ΔT fraction the engine gave it.
 
-    The summer column resolves through `loads.effective_cooling_policy`, NOT through
-    `spaces.policy_for` alone. The attic's summer temperature is substituted at load
-    time, so the declared policy is not the applied one: on Refrhus the declaration
-    renders 0.50 while the engine used 3.66.
+    The summer FACTOR comes from `loads.applied_cooling_factor`, NOT from
+    `spaces.policy_for` + `spaces.cooling_factor`. The attic's summer temperature is
+    substituted at load time, so the declared policy is not the applied one: on Refrhus
+    the declaration renders 0.50 while the engine used 3.66. The effective policy is
+    still resolved separately here, but only to say in the *input* column WHERE that
+    temperature came from — the number itself has one source.
     """
     names = sorted({s.space for s in env.surfaces if s.space is not None})
     if not names:
@@ -148,8 +150,8 @@ def _spaces_block(env: geometry_mod.Envelope, sc: sidecar.SideCar) -> list[str]:
                   else "no policy declared")
         winter = spaces_mod.heating_factor(policy, indoor_w, outdoor_w)
         if summer:
+            factor = loads.applied_cooling_factor(name, sc)
             effective = loads.effective_cooling_policy(name, policy, c)
-            factor = spaces_mod.cooling_factor(effective, c.indoor_f, c.outdoor_1_f)
             summer_cell = f"{factor:.2f} → {factor * summer_dt:.1f}°F"
             summer_input = _summer_input(policy, effective, c, origin)
         else:
@@ -243,10 +245,29 @@ def _borrows_block(env: geometry_mod.Envelope, sc: sidecar.SideCar) -> list[str]
 
 # How many void rooms the callout names before it stops listing and starts counting.
 _VOID_TOP_N = 3
-# The category geometry.py gives a floor face over an undrawn space (see
-# `geometry.CATEGORY_FOR_BELOW`'s default) — and therefore the row of the borrow table
-# this block's area is already part of.
-_VOID_CATEGORY = "buffer_floor"
+
+# What a floor face over an UNDRAWN space can become, and what each one means thermally.
+# Mirrors `geometry.CATEGORY_FOR_BELOW` and its `buffer_floor` default; a void never
+# resolves to `floor`, which is the on-grade case.
+#
+# Naming the default unconditionally was wrong on the `outdoor` branch in two directions
+# at once — wrong category, and "buffer" reading as the 50% a buffer implies while the
+# engine had actually applied the `outdoor` policy's 1.0. The reassuring parenthetical
+# hedged the space NAME but not the TREATMENT, so it understated the load while sounding
+# careful. Derive the category from what the envelope really carries instead.
+_VOID_TREATMENT = {
+    "buffer_floor": "over the undrawn space below (`crawlspace`, unless a level's "
+                    "`below_void` names another), at that space's own fraction of the "
+                    "design ΔT",
+    "exposed_floor": "over open air (a level's `below_void: outdoor`), at the **full** "
+                     "outdoor ΔT, not a buffer fraction",
+}
+
+
+def _void_categories(env: geometry_mod.Envelope) -> list[str]:
+    """Which of the void categories this envelope actually carries, in a stable order."""
+    present = {s.category for s in env.surfaces}
+    return [c for c in _VOID_TREATMENT if c in present]
 
 
 def _voids_block(env: geometry_mod.Envelope, sc: sidecar.SideCar) -> list[str]:
@@ -257,30 +278,36 @@ def _voids_block(env: geometry_mod.Envelope, sc: sidecar.SideCar) -> list[str]:
     shown = ranked[:_VOID_TOP_N]
     largest = ", ".join(f"{name} {area:,.1f} ft²" for name, area in shown)
     of_n = f" ({len(shown)} of {len(ranked)} rooms)" if len(ranked) > len(shown) else ""
+    categories = _void_categories(env)
+    # No horizontal surfaces to read the category off (a caller rendering a bare
+    # Envelope): say nothing about the treatment rather than assert the default.
+    modeled = ("" if not categories else " — modeled as "
+               + "; ".join(f"`{c}` {_VOID_TREATMENT[c]}" for c in categories))
     lines = [
         "",
         "### Schematic gaps",
         "",
         f"⚠ **{sum(env.voids.values()):,.1f} ft² of conditioned floor has no level drawn "
-        f"beneath it** — modeled as `{_VOID_CATEGORY}` over the undrawn space below "
-        f"(`crawlspace`, unless a level's `below_void` names another).",
+        f"beneath it**{modeled}.",
         "",
         # Bullets, not indented continuation lines: two-space indents are Markdown lazy
         # continuation and collapse the whole callout into one run-on paragraph.
         f"- Largest{of_n}: {largest}.",
         "- Draw those spaces in Sweet Home 3D to replace the assumption with geometry.",
     ]
-    # This block and the borrow table above describe the SAME floor — a void becomes a
-    # `buffer_floor`, whose U-value is then borrowed. Laid out as two adjacent blocks
-    # quoting two different areas with no relation stated, the natural reading is two
-    # separate problems that sum; in fact the smaller nests inside the larger. Say so.
-    borrowed_area = sum(s.area_ft2 for s in env.surfaces if s.category == _VOID_CATEGORY)
-    if borrowed_area > 0 and loads.assembly_borrow(_VOID_CATEGORY, sc.assemblies) is not None:
-        lines.append(
-            f"- Not a separate problem from the one above: this area is *part of* the "
-            f"{borrowed_area:,.1f} ft² on the `{_VOID_CATEGORY}` row of *Borrowed assembly "
-            f"U-values* (which also covers drawn buffer floors), so the two figures nest "
-            f"rather than add.")
+    # This block and the borrow table above describe the SAME floor — a void becomes one
+    # of these categories, whose U-value is then borrowed. Laid out as two adjacent
+    # blocks quoting two different areas with no relation stated, the natural reading is
+    # two separate problems that sum; in fact the smaller nests inside the larger. Say
+    # so — for whichever category is in play, not just for the common one.
+    for category in categories:
+        borrowed_area = sum(s.area_ft2 for s in env.surfaces if s.category == category)
+        if loads.assembly_borrow(category, sc.assemblies) is not None:
+            lines.append(
+                f"- Not a separate problem from the one above: this area is inside the "
+                f"{borrowed_area:,.1f} ft² on the `{category}` row of *Borrowed assembly "
+                f"U-values* (which spans every `{category}` surface, drawn or not), so "
+                f"the two figures nest rather than add.")
     return lines
 
 

@@ -262,6 +262,38 @@ def test_report_omits_the_cross_reference_when_the_buffer_floor_u_is_declared():
     assert "no level drawn beneath" in md          # the void warning itself still stands
 
 
+def _exposed_void_env():
+    """The `below_void: outdoor` shape: the void resolved to `exposed_floor`, not
+    `buffer_floor`. Verified against the real resolver — `geometry.CATEGORY_FOR_BELOW`
+    maps the `outdoor` space to `exposed_floor`, and `spaces` gives `outdoor` factor 1.0.
+    Nothing here is a `buffer_floor`, so a block that hardcodes the common category
+    describes a surface this envelope does not contain."""
+    return _env(voids={"Sunroom": 64.6},
+                surfaces=[geometry.Surface("exposed_floor", 64.6, "outdoor")])
+
+
+def test_report_names_the_category_the_void_actually_became_not_the_default():
+    """`below_void: outdoor` makes the void an `exposed_floor` at the FULL outdoor ΔT.
+    Claiming `buffer_floor` there is wrong twice over: wrong category, and "buffer" reads
+    as the ~50% a buffer implies while the engine applied 1.0 — understating the load
+    while sounding careful. The category is read off the envelope, never assumed."""
+    md = report.render_heating(_result(), _sc_slab(), env=_exposed_void_env())
+    warning = next(l for l in md.splitlines() if l.startswith("⚠ **"))
+    assert "`exposed_floor`" in warning
+    assert "buffer_floor" not in warning       # not even inside a hedging parenthetical
+    assert "full** outdoor ΔT" in warning      # the TREATMENT, not just the name
+
+
+def test_report_cross_references_the_borrow_on_the_exposed_floor_branch_too():
+    """The bullet went silently absent on this branch while the borrow table right above
+    showed `exposed_floor` borrowing the same severe slab donor — two blocks quoting
+    64.6 ft² with no stated relation, which is the exact defect it exists to close."""
+    md = report.render_heating(_result(), _sc_slab(), env=_exposed_void_env())
+    assert "| `exposed_floor` |" in md         # the borrow table row it points at
+    callout = next(l for l in md.splitlines() if l.startswith("- Not a separate problem"))
+    assert "`exposed_floor`" in callout and "64.6 ft²" in callout
+
+
 def test_report_echoes_buffer_space_factors():
     sc = sidecar.SideCar(
         assemblies={"exterior_wall": 0.1, "buffer_floor": 0.5},

@@ -13,33 +13,27 @@ from eldr import loads, sizing as sizing_mod, spaces as spaces_mod
 def _space_factors(a) -> dict:
     """Every buffer space a surface faces, with the ΔT fractions the engine applied.
 
-    `cooling_factor` resolves through `loads.effective_cooling_policy`, NOT through
-    `spaces.policy_for` alone. The attic's summer temperature is substituted at load
-    time, so the *declared* policy is not the applied one: on Refrhus the declaration
-    exports 0.50 while the engine loaded the ceiling at 3.66. `heating_factor` genuinely
-    is the declared policy's — only summer is substituted — which is exactly why the
-    asymmetry is easy to miss.
+    `cooling_factor` comes from `loads.applied_cooling_factor`, NOT from
+    `spaces.policy_for` + `spaces.cooling_factor`. The attic's summer temperature is
+    substituted at load time, so the *declared* policy is not the applied one: on Refrhus
+    the declaration exports 0.50 while the engine loaded the ceiling at 3.66.
+    `heating_factor` genuinely is the declared policy's — only summer is substituted —
+    which is exactly why the asymmetry is easy to miss.
 
-    A heating-only side-car (or one whose `cooling.outdoor_1_f` never resolved) has no
-    summer to resolve, so `cooling_factor` is null rather than a fabricated number.
+    A side-car with no `cooling` block has no summer to resolve, so `cooling_factor` is
+    null rather than a fabricated number.
     """
     sc, d = a.sc, a.sc.design
     indoor_w = d.indoor_heating_f
     outdoor_w = indoor_w - d.heating_delta_t
-    c = sc.cooling
-    summer = c is not None and c.outdoor_1_f is not None
-    out = {}
-    for name in sorted({s.space for s in a.env.surfaces if s.space is not None}):
-        policy = spaces_mod.policy_for(name, sc.spaces)
-        cooling_factor = None
-        if summer:
-            effective = loads.effective_cooling_policy(name, policy, c)
-            cooling_factor = spaces_mod.cooling_factor(effective, c.indoor_f, c.outdoor_1_f)
-        out[name] = {
-            "heating_factor": spaces_mod.heating_factor(policy, indoor_w, outdoor_w),
-            "cooling_factor": cooling_factor,
+    return {
+        name: {
+            "heating_factor": spaces_mod.heating_factor(
+                spaces_mod.policy_for(name, sc.spaces), indoor_w, outdoor_w),
+            "cooling_factor": loads.applied_cooling_factor(name, sc),
         }
-    return out
+        for name in sorted({s.space for s in a.env.surfaces if s.space is not None})
+    }
 
 
 def analysis_to_dict(a) -> dict:
@@ -94,8 +88,10 @@ def analysis_to_dict(a) -> dict:
             for r in room_loads
         ],
         # The level stack, as data. `levels` is keyed by the level's SH3D *name* exactly
-        # as `Envelope.level_heights_ft` is — two levels sharing a name collide, which is
-        # why a duplicate name is a load-time error upstream.
+        # as `Envelope.level_heights_ft` is, so two levels sharing a name collide into one
+        # entry. That is a load-time error ONLY when the side-car has a `levels:` block
+        # (an entry could not address one of them unambiguously); with no `levels:` block
+        # the collision is silent and reaches this map. See the README's known limitations.
         "levels": {name: {"height_ft": h} for name, h in a.env.level_heights_ft.items()},
         "spaces": _space_factors(a),
         # Present even when empty, so a consumer can tell "no gaps" from "old export".

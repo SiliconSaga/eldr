@@ -225,25 +225,51 @@ def effective_cooling_policy(space: str, policy: spaces.SpacePolicy,
         policy, summer_temp_f=spaces.sol_air_attic_temp_f(cooling.outdoor_1_f))
 
 
-def _cooling_dt_for(design, cooling, declared_spaces) -> Callable[[geometry.Surface], float]:
+def applied_cooling_factor(space: str, sc: sidecar.SideCar) -> float | None:
+    """The cooling ΔT fraction the engine ACTUALLY applies to a surface facing `space`.
+
+    The whole composition behind that number in one call — `policy_for`, then
+    `effective_cooling_policy`, then `cooling_factor` against the cooling block's own
+    indoor/outdoor pair. This is the seam every consumer should use.
+
+    `effective_cooling_policy` exists to stop a consumer diverging from the engine, but
+    on its own it only removes one of the three steps a consumer has to get right: the
+    same three-step composition was spelled out at three call sites, and two of them
+    already wrote the outer temperature differently (`indoor_f + cooling_delta_t` versus
+    `outdoor_1_f` — algebraically identical, so not a bug, but a second spelling is a
+    second thing to keep in sync). A fourth consumer can still get it wrong, which is
+    precisely the failure this family of helpers exists to prevent.
+
+    None when there is no summer to resolve — no `cooling` block, or an unresolved
+    `cooling.outdoor_1_f`. A heating-only side-car has no cooling factor, and inventing
+    one would be the same class of confidently-wrong number as the declared-policy bug.
+    """
+    c = sc.cooling
+    if c is None or c.outdoor_1_f is None:
+        return None
+    policy = effective_cooling_policy(space, spaces.policy_for(space, sc.spaces), c)
+    return spaces.cooling_factor(policy, c.indoor_f, c.outdoor_1_f)
+
+
+def _cooling_dt_for(sc: sidecar.SideCar) -> Callable[[geometry.Surface], float]:
     """ΔT resolver for cooling. A space's factor may exceed 1: a sun-heated attic runs
     hotter than outdoor air, so its ceiling sees a LARGER ΔT than the outdoor design one.
 
     Attic temperature precedence, strongest first: an observed `spaces.attic.summer_temp_f`,
     then the side-car's `cooling.attic_temp_f`, then the sol-air estimate — all resolved by
-    `effective_cooling_policy`, which reporting consumers must share.
+    `applied_cooling_factor`, the seam reporting consumers share with this resolver.
     """
-    air = cooling.cooling_delta_t
-    ground = max(0.0, design.ground_temp_f - cooling.indoor_f)
-    indoor, outdoor = cooling.indoor_f, cooling.indoor_f + air
+    cooling = sc.cooling
+    air = cooling.cooling_delta_t        # raises if outdoor_1_f is unresolved
+    ground = max(0.0, sc.design.ground_temp_f - cooling.indoor_f)
 
     def dt(s):
         if s.category in GROUND_COUPLED_CATEGORIES:
             return ground
         if s.space is not None:
-            policy = effective_cooling_policy(
-                s.space, spaces.policy_for(s.space, declared_spaces), cooling)
-            return spaces.cooling_factor(policy, indoor, outdoor) * air
+            # never None here: `cooling_delta_t` above already required a resolved
+            # outdoor temp, which is the only thing that makes the helper return None.
+            return applied_cooling_factor(s.space, sc) * air
         if s.category == BUFFER_WALL_CATEGORY:
             return BUFFER_FACTOR * air
         return air
@@ -281,8 +307,7 @@ def cooling_load(env: geometry.Envelope, sc: sidecar.SideCar) -> CoolingResult:
     if sc.cooling is None:
         raise ValueError("cooling requires a `cooling` block in the side-car")
     c = sc.cooling
-    conduction, by_category = _conduction(env.surfaces, sc.assemblies,
-                                          _cooling_dt_for(sc.design, c, sc.spaces))
+    conduction, by_category = _conduction(env.surfaces, sc.assemblies, _cooling_dt_for(sc))
 
     # Solar gain per window, using its exact bearing; grouped for display by octant.
     solar = 0.0
@@ -318,7 +343,7 @@ def per_room_loads(env: geometry.Envelope, sc: sidecar.SideCar) -> list[RoomLoad
     heat_dt = sc.design.heating_delta_t
     heat_dt_for = _heating_dt_for(sc.design, sc.spaces)
     cool = sc.cooling
-    cool_dt_for = _cooling_dt_for(sc.design, cool, sc.spaces) if cool is not None else None
+    cool_dt_for = _cooling_dt_for(sc) if cool is not None else None
     cond_area = sum(r.area_ft2 for r in env.rooms if r.conditioned) or 1.0
     internal_total = (cool.occupants * INTERNAL_SENSIBLE_PER_OCCUPANT
                       + APPLIANCE_SENSIBLE_BTUH) if cool is not None else 0.0

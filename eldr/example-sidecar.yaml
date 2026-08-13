@@ -19,8 +19,11 @@ assemblies:                   # U-value, BTU/(hr*ft^2*F), per surface category
   #                             # Unset -> borrows `exposed_floor`, then `floor` — and a slab's
   #                             # effective U is an order of magnitude off a framed floor's, so
   #                             # declare this one. Every borrow warns and is named in the report.
-  # exposed_floor: 0.05       # floor over open air (cantilever/overhang). PROVISIONAL: nothing
-  #                             # infers it — reachable only via `levels.<name>.below_void: outdoor`.
+  # exposed_floor: 0.076      # FRAMED floor over open air (cantilever/overhang) — R-13 between
+  #                             # joists, deliberately NOT the slab's 0.05 above: that is the very
+  #                             # confusion the borrow warning is about. Loaded at the FULL outdoor
+  #                             # ΔT, not a buffer fraction. PROVISIONAL: nothing infers it —
+  #                             # reachable only via `levels.<name>.below_void: outdoor`.
 equipment:                    # optional — enables the Manual S existing-unit check
   existing_tons: 4.0          # current unit nominal tonnage (omit to skip the comparison)
 cooling:                      # optional — enables the Manual J 1b cooling load
