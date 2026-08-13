@@ -1,5 +1,5 @@
 import pytest
-from eldr import loads, geometry, sidecar
+from eldr import loads, geometry, sidecar, spaces
 
 
 def _sc():
@@ -8,6 +8,21 @@ def _sc():
         design=sidecar.DesignConditions(indoor_heating_f=70, outdoor_heating_99_f=20,
                                         supply_air_rise_f=50),
         infiltration_ach=0.5,
+    )
+
+
+def _envelope(surfaces):
+    return geometry.Envelope(surfaces=list(surfaces), volume_ft3=0.0)
+
+
+def _sidecar(assemblies, spaces=None, cooling=None):
+    return sidecar.SideCar(
+        assemblies=dict(assemblies),
+        design=sidecar.DesignConditions(indoor_heating_f=70, outdoor_heating_99_f=13,
+                                        supply_air_rise_f=50),
+        infiltration_ach=0.0,          # isolate conduction — no infiltration term
+        spaces=dict(spaces or {}),
+        cooling=cooling,
     )
 
 
@@ -227,6 +242,50 @@ def test_buffer_wall_cooling_fraction():
     )
     r = loads.cooling_load(env, sc)   # cooling ΔT = 20
     assert abs(r.by_category["buffer_wall"] - 0.1 * 100 * (loads.BUFFER_FACTOR * 20)) < 1e-6
+
+
+def test_buffer_floor_uses_its_space_policy():
+    """Two buffer floors, same category, different spaces -> different ΔT."""
+    env = _envelope([geometry.Surface("buffer_floor", 100.0, "crawlspace"),
+                     geometry.Surface("buffer_floor", 100.0, "garage")])
+    sc = _sidecar(assemblies={"buffer_floor": 0.5},
+                  spaces={"crawlspace": spaces.SpacePolicy("crawlspace", winter_temp_f=32.0),
+                          "garage": spaces.SpacePolicy("garage", factor=0.25)})
+    res = loads.heating_load(env, sc)
+    dt = sc.design.heating_delta_t
+    expected = 0.5 * 100.0 * dt * (38.0 / 57.0) + 0.5 * 100.0 * dt * 0.25
+    assert abs(res.conduction_btuh - expected) < 1e-6
+
+
+def test_ceiling_uses_the_attic_policy_not_outdoor_air():
+    env = _envelope([geometry.Surface("ceiling", 100.0, "attic")])
+    sc = _sidecar(assemblies={"ceiling": 0.03},
+                  spaces={"attic": spaces.SpacePolicy("attic", vented=False)})
+    res = loads.heating_load(env, sc)
+    assert abs(res.conduction_btuh - 0.03 * 100.0 * sc.design.heating_delta_t * 0.5) < 1e-6
+
+
+def test_vented_attic_restores_full_outdoor_delta_t():
+    env = _envelope([geometry.Surface("ceiling", 100.0, "attic")])
+    sc = _sidecar(assemblies={"ceiling": 0.03},
+                  spaces={"attic": spaces.SpacePolicy("attic", vented=True)})
+    res = loads.heating_load(env, sc)
+    assert abs(res.conduction_btuh - 0.03 * 100.0 * sc.design.heating_delta_t) < 1e-6
+
+
+def test_buffer_floor_u_falls_back_through_exposed_floor_to_floor():
+    env = _envelope([geometry.Surface("buffer_floor", 100.0, "crawlspace")])
+    sc = _sidecar(assemblies={"floor": 0.02})     # neither buffer_floor nor exposed_floor
+    res = loads.heating_load(env, sc)
+    assert res.conduction_btuh > 0.0
+
+
+def test_surface_without_space_keeps_the_plain_outdoor_delta_t():
+    """Walls and windows carry no space and must be untouched by this change."""
+    env = _envelope([geometry.Surface("exterior_wall", 100.0)])
+    sc = _sidecar(assemblies={"exterior_wall": 0.08})
+    res = loads.heating_load(env, sc)
+    assert abs(res.conduction_btuh - 0.08 * 100.0 * sc.design.heating_delta_t) < 1e-6
 
 
 def test_per_room_internal_only_for_conditioned():

@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 import bisect
-from eldr import geometry, sidecar, units
+from eldr import geometry, sidecar, spaces, units
 
 # Peak solar heat gain (BTU/hr per ft^2 of glass) at the four cardinal facings;
 # any bearing between them is linearly interpolated (demo-grade).
@@ -30,8 +30,15 @@ GROUND_COUPLED_CATEGORIES = frozenset({"basement_wall", "floor"})
 # BUFFER_FACTOR is that fraction (0.5 ≈ the buffer sits midway). Demo-grade, one factor
 # for all buffers. A `buffer_wall` with no assembly U falls back to `exterior_wall`.
 BUFFER_WALL_CATEGORY = "buffer_wall"
-BUFFER_FACTOR = 0.5
+BUFFER_FACTOR = spaces.UNVENTED_FACTOR
 # =====================================================================
+
+# Surfaces whose U-value may borrow a related category's assembly when unset.
+_U_FALLBACKS = {
+    BUFFER_WALL_CATEGORY: ("exterior_wall",),
+    "buffer_floor": ("exposed_floor", "floor"),
+    "exposed_floor": ("floor",),
+}
 
 
 @dataclass(frozen=True)
@@ -64,53 +71,74 @@ class RoomLoad:
 
 
 def _conduction(surfaces, assemblies, dt_for):
-    """UA·ΔT conduction over a surface list; `dt_for(category)` gives the ΔT to use.
+    """UA·ΔT conduction over a surface list; `dt_for(surface)` gives the ΔT to use.
 
-    Per-category ΔT lets below-grade surfaces use the ground ΔT while everything
-    else uses the outdoor-air ΔT. Returns (total, by_category).
+    The resolver takes the whole surface, not just its category: below-grade surfaces
+    use the ground ΔT, a surface facing a buffer space uses that space's own factor
+    (two `buffer_floor`s over different spaces differ), and everything else uses the
+    outdoor-air ΔT. Returns (total, by_category).
     """
     by_category: dict[str, float] = {}
     total = 0.0
     for s in surfaces:
         u = _u_value(s.category, assemblies)
-        q = u * s.area_ft2 * dt_for(s.category)
+        q = u * s.area_ft2 * dt_for(s)
         by_category[s.category] = by_category.get(s.category, 0.0) + q
         total += q
     return total, by_category
 
 
 def _u_value(category, assemblies):
-    """U-value for a surface category; a `buffer_wall` falls back to `exterior_wall`."""
+    """U-value for a surface category, borrowing a related assembly when unset."""
     if category in assemblies:
         return assemblies[category]
-    if category == BUFFER_WALL_CATEGORY and "exterior_wall" in assemblies:
-        return assemblies["exterior_wall"]
+    for alt in _U_FALLBACKS.get(category, ()):
+        if alt in assemblies:
+            return assemblies[alt]
     raise KeyError(f"no assembly U-value for category '{category}' in side-car")
 
 
-def _heating_dt_for(design) -> Callable[[str], float]:
-    """ΔT resolver for heating: ground ΔT below grade, buffer fraction for buffer walls,
-    outdoor-air ΔT elsewhere."""
+def _heating_dt_for(design, declared_spaces) -> Callable[[geometry.Surface], float]:
+    """ΔT resolver for heating: ground ΔT below grade, the space's own factor for any
+    surface facing a buffer space, outdoor-air ΔT elsewhere."""
     air, ground = design.heating_delta_t, design.ground_heating_delta_t
-    buffer = BUFFER_FACTOR * air
-    return lambda cat: (ground if cat in GROUND_COUPLED_CATEGORIES
-                        else buffer if cat == BUFFER_WALL_CATEGORY else air)
+    indoor, outdoor = design.indoor_heating_f, design.indoor_heating_f - air
+
+    def dt(s):
+        if s.category in GROUND_COUPLED_CATEGORIES:
+            return ground
+        if s.space is not None:
+            policy = spaces.policy_for(s.space, declared_spaces)
+            return spaces.heating_factor(policy, indoor, outdoor) * air
+        if s.category == BUFFER_WALL_CATEGORY:
+            return BUFFER_FACTOR * air
+        return air
+    return dt
 
 
-def _cooling_dt_for(design, cooling) -> Callable[[str], float]:
-    """ΔT resolver for cooling: outdoor-air ΔT above grade; below grade the surface
-    sees the soil, so its ΔT is (ground - indoor), clamped at 0 (a sink); a buffer wall
-    sees a fraction of the outdoor ΔT."""
+def _cooling_dt_for(design, cooling, declared_spaces) -> Callable[[geometry.Surface], float]:
+    """ΔT resolver for cooling. A space's factor may exceed 1: a sun-heated attic runs
+    hotter than outdoor air, so its ceiling sees a LARGER ΔT than the outdoor design one."""
     air = cooling.cooling_delta_t
     ground = max(0.0, design.ground_temp_f - cooling.indoor_f)
-    buffer = BUFFER_FACTOR * air
-    return lambda cat: (ground if cat in GROUND_COUPLED_CATEGORIES
-                        else buffer if cat == BUFFER_WALL_CATEGORY else air)
+    indoor, outdoor = cooling.indoor_f, cooling.indoor_f + air
+
+    def dt(s):
+        if s.category in GROUND_COUPLED_CATEGORIES:
+            return ground
+        if s.space is not None:
+            policy = spaces.policy_for(s.space, declared_spaces)
+            return spaces.cooling_factor(policy, indoor, outdoor) * air
+        if s.category == BUFFER_WALL_CATEGORY:
+            return BUFFER_FACTOR * air
+        return air
+    return dt
 
 
 def heating_load(env: geometry.Envelope, sc: sidecar.SideCar) -> HeatingResult:
     dt = sc.design.heating_delta_t
-    conduction, by_category = _conduction(env.surfaces, sc.assemblies, _heating_dt_for(sc.design))
+    conduction, by_category = _conduction(env.surfaces, sc.assemblies,
+                                          _heating_dt_for(sc.design, sc.spaces))
 
     infil_cfm = sc.infiltration_ach * env.volume_ft3 / 60.0
     infiltration = units.SENSIBLE_FACTOR * infil_cfm * dt
@@ -138,7 +166,8 @@ def cooling_load(env: geometry.Envelope, sc: sidecar.SideCar) -> CoolingResult:
     if sc.cooling is None:
         raise ValueError("cooling requires a `cooling` block in the side-car")
     c = sc.cooling
-    conduction, by_category = _conduction(env.surfaces, sc.assemblies, _cooling_dt_for(sc.design, c))
+    conduction, by_category = _conduction(env.surfaces, sc.assemblies,
+                                          _cooling_dt_for(sc.design, c, sc.spaces))
 
     # Solar gain per window, using its exact bearing; grouped for display by octant.
     solar = 0.0
@@ -172,9 +201,9 @@ def per_room_loads(env: geometry.Envelope, sc: sidecar.SideCar) -> list[RoomLoad
     shared across conditioned rooms by floor area; unconditioned rooms get none.
     """
     heat_dt = sc.design.heating_delta_t
-    heat_dt_for = _heating_dt_for(sc.design)
+    heat_dt_for = _heating_dt_for(sc.design, sc.spaces)
     cool = sc.cooling
-    cool_dt_for = _cooling_dt_for(sc.design, cool) if cool is not None else None
+    cool_dt_for = _cooling_dt_for(sc.design, cool, sc.spaces) if cool is not None else None
     cond_area = sum(r.area_ft2 for r in env.rooms if r.conditioned) or 1.0
     internal_total = (cool.occupants * INTERNAL_SENSIBLE_PER_OCCUPANT
                       + APPLIANCE_SENSIBLE_BTUH) if cool is not None else 0.0

@@ -156,25 +156,28 @@ FIXTURE_OVER_GARAGE = textwrap.dedent("""\
 """)
 
 
-def test_buffer_floor_without_an_assembly_fails_loudly(tmp_path):
-    """PINS CURRENT BEHAVIOR, NOT DESIRED BEHAVIOR — flip this in Task 6.
+def test_buffer_floor_without_an_assembly_borrows_the_floor_u(tmp_path):
+    """The flipped marker: this model used to raise, and must now produce a load.
 
-    Wiring the stack resolver introduced `buffer_floor` / `exposed_floor` as surface
-    categories, and `loads._u_value` raises on any category the side-car has no assembly
-    for (only `buffer_wall` has a fallback). So `eldr analyze` against a house with a
-    room over a garage — including this project's own Refrhus model — raises today.
-
-    That is a broken primary path, and it deserves a failing-on-purpose detector rather
-    than a note in a report: when Task 6 teaches loads to read `Surface.space` and its
-    per-space policy, this test starts failing and has to be rewritten to assert the
-    real answer. Until then the gap is visible instead of silent.
+    `SIDECAR` declares no `buffer_floor` and no `exposed_floor`, so the U-value walks
+    the fallback chain `buffer_floor -> exposed_floor -> floor` and lands on `floor`
+    (0.05). The ΔT is the garage's, not outdoor air's: no `spaces:` block is declared,
+    so `garage` takes its built-in unvented default of half the design ΔT.
     """
+    from eldr import geometry, loads, sidecar as sidecar_mod, spaces
     home = tmp_path / "Home.xml"
     home.write_text(FIXTURE_OVER_GARAGE)
     sc = tmp_path / "sc.yaml"
     sc.write_text(SIDECAR)                       # declares exterior_wall/window/ceiling/floor
-    with pytest.raises(KeyError, match="buffer_floor"):
-        cli.run(str(home), str(sc))
+    md = cli.run(str(home), str(sc))             # the path that raised before Task 6
+    assert "buffer_floor" in md
+
+    parsed = sidecar_mod.load_sidecar(str(sc))
+    env = geometry.extract_envelope(str(home), parsed.wall_boundaries, parsed.levels)
+    area = sum(s.area_ft2 for s in env.surfaces if s.category == "buffer_floor")
+    r = loads.heating_load(env, parsed)
+    expected = 0.05 * area * parsed.design.heating_delta_t * spaces.UNVENTED_FACTOR
+    assert abs(r.by_category["buffer_floor"] - expected) < 1e-6
 
 
 def test_buffer_floor_is_actually_what_that_model_produces(tmp_path):
