@@ -63,8 +63,10 @@ class FaceSplit:
     """How one conditioned room's floor and ceiling divide by what they face.
 
     `below` / `above` map a category — "interior", "ground", or a space name — to area
-    in ft^2. `void_below_ft2` is the area that survived the misalignment tolerance with
-    nothing drawn beneath it, reported so a schematic gap stays visible.
+    in ft^2. Each side sums to the room's own polygon area: every square foot of floor
+    and ceiling faces something. `void_below_ft2` is the measured area that survived the
+    misalignment tolerance with nothing drawn beneath it, reported so a schematic gap
+    stays visible; it is not part of that sum's bookkeeping.
     """
     room_id: str
     below: dict[str, float]
@@ -136,6 +138,21 @@ def _tidy(areas: dict[str, float], min_region_ft2: float) -> dict[str, float]:
     total = sum(areas.values())
     scale = total / sum(kept.values())
     return {k: v * scale for k, v in kept.items()}
+
+
+def _to_room_area(areas: dict[str, float], area_ft2: float) -> dict[str, float]:
+    """Scale a face's categories so they sum to the room's own polygon area.
+
+    The resolver decides how a floor or ceiling SPLITS, never how much of it there is —
+    that is the shoelace area upstream. Two things otherwise leak area away: void cells
+    inside the misalignment tolerance are dropped outright rather than reassigned, and a
+    raster only approximates a polygon. Both are re-absorbed here, in proportion.
+    """
+    total = sum(areas.values())
+    if not areas or total <= 0.0:
+        return areas
+    scale = area_ft2 / total
+    return {k: v * scale for k, v in areas.items()}
 
 
 def resolve_faces(levels: list[LevelInfo], rooms_by_level: dict[str, list[dict]], *,
@@ -222,10 +239,14 @@ def resolve_faces(levels: list[LevelInfo], rooms_by_level: dict[str, list[dict]]
             if void_ft2 > 0.0:
                 below[this_below_void] = below.get(this_below_void, 0.0) + void_ft2
 
+            # void_below_ft2 stays as MEASURED — it is the raster's own estimate of a
+            # schematic gap, reported so the warning means something, not a share of a
+            # normalized whole.
+            area_ft2 = room["area_ft2"]
             out[room["id"]] = FaceSplit(
                 room_id=room["id"],
-                below=_tidy(below, min_region_ft2),
-                above=_tidy(above, min_region_ft2),
+                below=_to_room_area(_tidy(below, min_region_ft2), area_ft2),
+                above=_to_room_area(_tidy(above, min_region_ft2), area_ft2),
                 void_below_ft2=void_ft2,
             )
     return out

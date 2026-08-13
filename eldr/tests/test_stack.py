@@ -1,3 +1,5 @@
+import pytest
+
 from eldr import stack
 
 
@@ -144,6 +146,19 @@ def test_scaffolding_level_is_invisible_to_the_stack():
     rooms = {"LB": [_room("rb", "LB", 0, 0, 400, 300)], "LT": [],
              "LM": [_room("rm", "LM", 0, 0, 400, 300)]}
     assert set(_resolve(levels, rooms)["rm"].below) == {"interior"}
+
+
+def test_face_areas_sum_to_the_room_polygon_area():
+    """Every square foot of floor and ceiling faces something. The resolver splits
+    the room's area; it never re-measures it. Pins against both the eroded-band
+    loss and raster discretization drift."""
+    levels = [_lv("LB", "Basement", 0.0), _lv("LM", "Main", 250.0)]
+    rooms = {"LB": [_room("rb", "LB", 10, 10, 190, 290)],
+             "LM": [_room("rm", "LM", 0, 0, 400, 300)]}
+    faces = _resolve(levels, rooms)["rm"]
+    area = rooms["LM"][0]["area_ft2"]
+    assert sum(faces.below.values()) == pytest.approx(area, rel=1e-9)
+    assert sum(faces.above.values()) == pytest.approx(area, rel=1e-9)
 
 
 def test_unconditioned_rooms_get_no_faces():
