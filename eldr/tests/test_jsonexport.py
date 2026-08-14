@@ -140,9 +140,13 @@ def test_json_carries_levels_spaces_voids_and_surfaces(tmp_path):
     assert payload["spaces"]["crawlspace"]["heating_factor"] == pytest.approx(0.40)
     assert payload["spaces"]["crawlspace"]["cooling_factor"] == pytest.approx(0.60)
 
-    # the void, itemized by room exactly as the report warns about it
-    assert payload["voids"] == {"Living room": pytest.approx(a.env.voids["Living room"])}
-    assert payload["voids"]["Living room"] > 60.0
+    # the void, itemized by room exactly as the report warns about it — area AND the
+    # category that gap resolved to, so a consumer never has to infer the second from the
+    # surfaces array (which answers a different question on a multi-`below_void` model).
+    assert payload["voids"] == {"Living room": {
+        "area_ft2": pytest.approx(a.env.voids["Living room"].area_ft2),
+        "category": "buffer_floor"}}
+    assert payload["voids"]["Living room"]["area_ft2"] > 60.0
 
     # the surfaces array, with the space each horizontal faces. Categories compared whole:
     # `floor` is a substring of `buffer_floor`, and they are different boundaries.

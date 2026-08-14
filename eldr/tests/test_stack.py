@@ -361,6 +361,56 @@ def test_level_voids_override_both_faces():
     assert set(faces.above) == {"vaulted"}
 
 
+def test_explicit_below_void_outranks_the_implicit_ground_on_the_lowest_level():
+    """A single conditioned storey with `below_void: outdoor` — a house on piers.
+
+    The lowest conditioned level is assumed to sit on grade, which is right until the
+    modeler says otherwise; `levels.<name>.below_void` IS them saying otherwise, about this
+    exact question. The implicit default used to win anyway, so the one documented route to
+    `exposed_floor` could not work on a one-storey model: it silently produced a
+    ground-coupled `floor` instead, at the ground assembly's U rather than open air's.
+
+    Both directions are asserted. Only checking the override would pass against an
+    implementation that had simply dropped the ground default altogether.
+    """
+    levels = [_lv("LM", "Main", 0.0)]
+    rooms = {"LM": [_room("rm", "LM", 0, 0, 400, 300)]}
+    area = rooms["LM"][0]["area_ft2"]
+    assert set(_resolve(levels, rooms)["rm"].below) == {"ground"}     # the default stands
+
+    faces = _resolve(levels, rooms, level_voids={"LM": ("outdoor", None)})["rm"]
+    assert faces.below == pytest.approx({"outdoor": area})
+    assert "ground" not in faces.below
+    # and it is a schematic gap, named — the same undrawn area, reported as such
+    assert faces.void_below_ft2 == pytest.approx(area)
+    assert faces.void_space == "outdoor"
+
+
+def test_void_space_is_none_when_there_is_no_void():
+    """`void_space` pairs with `void_below_ft2`, so it must not name a space for a floor
+    that is fully drawn — a consumer keying off the name alone would report a gap of 0 ft²
+    as a real one."""
+    levels = [_lv("LB", "Basement", 0.0), _lv("LM", "Main", 250.0)]
+    rooms = {"LB": [_room("rb", "LB", 0, 0, 400, 300)],
+             "LM": [_room("rm", "LM", 0, 0, 400, 300)]}
+    faces = _resolve(levels, rooms)["rm"]
+    assert faces.void_below_ft2 == 0.0
+    assert faces.void_space is None
+
+
+def test_void_space_reports_the_level_that_owns_the_gap_not_the_house_default():
+    """Two wings over two different undrawn spaces. `void_space` is per FaceSplit, so each
+    room's gap carries its OWN level's `below_void` — the pairing that lets a caller name
+    the category a void became instead of guessing it back out of the whole envelope."""
+    levels = [_lv("LB", "Basement", 0.0), _lv("LM", "Main", 250.0), _lv("LW", "Wing", 250.0, idx=1)]
+    rooms = {"LB": [_room("rb", "LB", 0, 0, 400, 300)],
+             "LM": [_room("rm", "LM", 500, 0, 900, 300)],       # beside, nothing beneath
+             "LW": [_room("rw", "LW", 1000, 0, 1400, 300)]}     # likewise, other level
+    faces = _resolve(levels, rooms, level_voids={"LM": ("outdoor", None)})
+    assert faces["rm"].void_space == "outdoor"                  # its level's override
+    assert faces["rw"].void_space == "crawlspace"               # the house default
+
+
 def test_level_voids_partial_falls_through_to_the_house_default():
     levels = [_lv("LB", "Basement", 0.0), _lv("LM", "Main", 250.0)]
     rooms = {"LB": [_room("rb", "LB", 0, 0, 400, 300)],

@@ -114,7 +114,7 @@ def _honesty(a) -> str:
     if a.env.voids:
         # The category in code font, matching the borrow bullet above it, so a reader can
         # see the two caveats are about the same floor rather than two floors — and read
-        # off the ENVELOPE via the shared helper, never named here. An `or "buffer floor"`
+        # off the VOIDS via the shared helper, never named here. An `or "buffer floor"`
         # fallback lived on this line and was exactly the defect the helper exists to
         # remove: `below_void: ground` resolves the void to a ground-coupled `floor`,
         # which the helper reports as "no category I can name", and the fallback then
@@ -124,7 +124,8 @@ def _honesty(a) -> str:
         categories = report.void_categories(a.env)
         as_what = (" — modeled as " + ", ".join(f"`{c}`" for c in categories)
                    + " over undrawn space") if categories else ""
-        bullets.append(f"**{sum(a.env.voids.values()):,.1f} ft² of conditioned floor has no "
+        total = sum(v.area_ft2 for v in a.env.voids.values())
+        bullets.append(f"**{total:,.1f} ft² of conditioned floor has no "
                        f"level drawn beneath it**{as_what}. That is a gap in the drawing, "
                        "not a measurement; draw those spaces and the assumption is "
                        "replaced by geometry.")

@@ -751,3 +751,158 @@ def test_level_volumes_attribute_the_conditioned_volume_per_level(tmp_path):
     assert env.level_volumes_ft3["Main"] == pytest.approx(
         units.sqcm_to_sqft(400 * 300) * units.cm_to_ft(250))
     assert sum(env.level_volumes_ft3.values()) == pytest.approx(env.volume_ft3)
+
+
+def test_merging_two_same_named_gaps_keeps_a_shared_category_and_drops_a_conflicting_one():
+    """`Envelope.voids` is keyed by ROOM NAME, and Sweet Home 3D happily gives two rooms
+    the same one ("Closet" three times over, on Refrhus). Their areas add. Their categories
+    survive the merge only if they agree: keeping the first would hang a treatment claim on
+    an entry that is partly some other surface, which is the very confusion carrying the
+    category per void exists to end.
+    """
+    assert geometry._merge_void(None, 7.0, "floor") == geometry.Void(7.0, "floor")
+    assert (geometry._merge_void(geometry.Void(10.0, "buffer_floor"), 5.0, "buffer_floor")
+            == geometry.Void(15.0, "buffer_floor"))
+    mixed = geometry._merge_void(geometry.Void(10.0, "buffer_floor"), 5.0, "exposed_floor")
+    assert mixed.area_ft2 == 15.0            # nothing is lost from the total
+    assert mixed.category is None            # but no single category describes it
+
+
+_MAIN_WALLS = (
+    "  <wall id='m-n' level='LM' xStart='0' yStart='0' xEnd='400' yEnd='0' height='250' thickness='10'/>\n"
+    "  <wall id='m-s' level='LM' xStart='0' yStart='300' xEnd='400' yEnd='300' height='250' thickness='10'/>\n"
+    "  <wall id='m-w' level='LM' xStart='0' yStart='0' xEnd='0' yEnd='300' height='250' thickness='10'/>\n"
+    "  <wall id='m-e' level='LM' xStart='400' yStart='0' xEnd='400' yEnd='300' height='250' thickness='10'/>\n")
+
+
+def test_a_conditioned_level_with_rooms_but_no_walls_still_contributes_its_volume(tmp_path):
+    """Volume accounting used to ride on the walk over `walls_by_level`, so a level was
+    accounted only if it carried walls. A conditioned level with rooms and no walls drawn
+    — an open loft, or a storey whose partitions were drawn on the level below — reads as
+    real space everywhere else in the engine, yet contributed 0 ft³ and took its share of
+    the infiltration term with it, silently.
+
+    Asserted against the WALLED model rather than a recomputed literal: removing walls
+    must change the surfaces and leave the volume alone. A literal here would still be met
+    by an implementation that had started deriving volume from something else entirely.
+    """
+    from eldr import units
+    walled = tmp_path / "Walled.xml"
+    walled.write_text(MULTI_LEVEL_FIXTURE)
+    wall_less = tmp_path / "WallLess.xml"
+    wall_less.write_text(MULTI_LEVEL_FIXTURE.replace(_MAIN_WALLS, ""))
+
+    base = geometry.extract_envelope(str(walled))
+    env = geometry.extract_envelope(str(wall_less))
+    assert env.volume_ft3 == pytest.approx(base.volume_ft3)
+    assert env.level_volumes_ft3["Main"] == pytest.approx(
+        units.sqcm_to_sqft(400 * 300) * units.cm_to_ft(250))
+    # the fixture really did lose Main's walls, so this is not a no-op comparison
+    # (Main's are the model's only `exterior_wall` — the Basement's are `basement_wall`)
+    assert _by_cat(base)["exterior_wall"] > 0.0
+    assert "exterior_wall" not in _by_cat(env)
+
+
+def test_a_walled_scaffolding_level_contributes_no_envelope_surface(tmp_path):
+    """A duct chase is excluded from the stack and from the conditioned volume, so nothing
+    can be on the thermal envelope between it and outdoors. Its walls used to be classified
+    BEFORE that exclusion — the bounding-box edge test called every one of them exterior —
+    so the chase shipped heating and cooling load for a storey the same run had just
+    declared imaginary.
+
+    Compared category by category against the same model without the chase: adding a chase
+    must add nothing at all. `role: ignore` only silences the warning, so an implementation
+    that treated it as "and also keep the walls" fails here.
+    """
+    from eldr import sidecar as sc_mod
+    plain = tmp_path / "Plain.xml"
+    plain.write_text(MULTI_LEVEL_FIXTURE)
+    chased = tmp_path / "Chased.xml"
+    chased.write_text(_with_chase(98))               # 98cm square: over the noise floor
+
+    base = geometry.extract_envelope(str(plain))
+    env = geometry.extract_envelope(
+        str(chased), levels={"transition": sc_mod.LevelSpec(role="ignore")})
+    assert _by_cat(env) == pytest.approx(_by_cat(base))
+    assert env.volume_ft3 == pytest.approx(base.volume_ft3)
+    # the chase IS in the model — it just contributes nothing
+    assert "transition" in env.level_heights_ft
+    assert env.level_volumes_ft3["transition"] == 0.0
+
+
+def test_a_model_whose_rooms_are_all_unconditioned_gets_no_legacy_horizontals(tmp_path):
+    """The legacy bounding-box ceiling/floor is for a model with NO ROOMS, and was gated on
+    `not faces` instead. `faces` is also empty when every room resolved as unconditioned —
+    a garage-only model, or every level marked `role: ignore` — which is the resolver
+    answering, not failing to. Running the fallback there manufactured a ceiling and a
+    floor for space that carries no supply air.
+    """
+    from eldr import sidecar as sc_mod
+    p = tmp_path / "Home.xml"
+    p.write_text(MULTI_LEVEL_FIXTURE)
+    env = geometry.extract_envelope(str(p), levels={
+        "Basement": sc_mod.LevelSpec(role="unconditioned"),
+        "Main": sc_mod.LevelSpec(role="unconditioned")})
+    assert env.rooms and not any(r.conditioned for r in env.rooms)   # not vacuous
+    cats = _by_cat(env)
+    assert "ceiling" not in cats and "floor" not in cats
+    assert not [s for r in env.rooms for s in r.surfaces
+                if s.category in ("ceiling", "floor")]
+    assert env.volume_ft3 == 0.0
+
+
+def test_the_roomless_fallback_still_fires_when_the_model_has_rooms_on_no_level(tmp_path):
+    """The other side of the gate above: the legacy path is narrowed, not deleted."""
+    p = tmp_path / "Home.xml"
+    p.write_text(MULTI_LEVEL_FIXTURE.replace("<room", "<notaroom").replace("</room>",
+                                                                          "</notaroom>"))
+    env = geometry.extract_envelope(str(p))
+    assert env.rooms == []
+    cats = _by_cat(env)
+    assert cats["ceiling"] > 0.0 and cats["floor"] > 0.0
+
+
+# One conditioned storey and nothing drawn beneath it — the shape where the implicit
+# ground default and an explicit `below_void` collide.
+_LONE_STOREY_FIXTURE = textwrap.dedent("""\
+<?xml version='1.0'?>
+<home version='7400' name='t' wallHeight='300'>
+  <level id='LM' name='Main' elevation='0.0' floorThickness='12.0' height='250' elevationIndex='0'/>
+  <wall id='m-n' level='LM' xStart='0' yStart='0' xEnd='400' yEnd='0' height='250' thickness='10'/>
+  <wall id='m-s' level='LM' xStart='0' yStart='300' xEnd='400' yEnd='300' height='250' thickness='10'/>
+  <wall id='m-w' level='LM' xStart='0' yStart='0' xEnd='0' yEnd='300' height='250' thickness='10'/>
+  <wall id='m-e' level='LM' xStart='400' yStart='0' xEnd='400' yEnd='300' height='250' thickness='10'/>
+  <room id='rm' level='LM' name='Living room'>
+    <point x='0' y='0'/><point x='400' y='0'/><point x='400' y='300'/><point x='0' y='300'/>
+  </room>
+</home>
+""")
+
+
+def test_below_void_outdoor_reaches_exposed_floor_on_a_lone_conditioned_storey(tmp_path):
+    """A house on piers: one storey, nothing beneath it, `below_void: outdoor`.
+
+    The implicit "the lowest conditioned level sits on grade" default used to overwrite the
+    explicit answer, so this model emitted a ground-coupled `floor` — the only documented
+    route to `exposed_floor` could not reach it at all on a single-storey house. The
+    default itself is still right and is asserted first, so removing it fails here too.
+    """
+    from eldr import sidecar as sc_mod
+    from eldr import units
+    p = tmp_path / "Home.xml"
+    p.write_text(_LONE_STOREY_FIXTURE)
+    foot = units.sqcm_to_sqft(400 * 300)
+
+    on_grade = _by_cat(geometry.extract_envelope(str(p)))
+    assert on_grade["floor"] == pytest.approx(foot)
+    assert "exposed_floor" not in on_grade
+
+    env = geometry.extract_envelope(
+        str(p), levels={"Main": sc_mod.LevelSpec(below_void="outdoor")})
+    cats = _by_cat(env)
+    assert cats["exposed_floor"] == pytest.approx(foot)
+    assert "floor" not in cats
+    assert _spaces_faced(env, "exposed_floor") == {"outdoor"}
+    # and the undrawn area is reported as the schematic gap it is, in ITS category
+    assert env.voids["Living room"].category == "exposed_floor"
+    assert env.voids["Living room"].area_ft2 == pytest.approx(foot, rel=0.02)

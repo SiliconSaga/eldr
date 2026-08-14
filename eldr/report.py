@@ -103,11 +103,11 @@ def _levels_block(env: geometry_mod.Envelope, sc: sidecar.SideCar) -> list[str]:
         "",
         f"_Total conditioned volume **{env.volume_ft3:,.0f} ft³** — the infiltration "
         f"basis. Set `levels.<name>.height_ft` to correct a height Sweet Home 3D "
-        f"defaulted. A level contributing 0 ft³ added nothing to that total; usually that "
-        f"is deliberate (it holds no conditioned rooms — garage, crawlspace, joist "
-        f"space), but it is not the only cause: the volume is accumulated while walking "
-        f"each level's walls, so a level with rooms and no walls drawn is skipped and "
-        f"reads 0 ft³ here too._",
+        f"defaulted. A level contributing 0 ft³ holds no conditioned rooms: a garage or "
+        f"crawlspace, a level given `role: ignore`, or a roomless one Eldr treated as "
+        f"joists/duct chase (which warns separately). Walls have nothing to do with it — "
+        f"a level with conditioned rooms drawn on it contributes whether or not any wall "
+        f"is drawn there._",
     ]
     return lines
 
@@ -261,10 +261,11 @@ _VOID_TOP_N = 3
 # this table produces NO claim at all.
 #
 # `floor` is deliberately absent even though `below_void: ground` reaches it
-# (`geometry.CATEGORY_FOR_BELOW`). Its presence in an envelope proves nothing: nearly
-# every model has an on-grade floor on its lowest level, so keying off it would report a
-# void as ground-coupled on almost any house. Better to say nothing than to guess — that
-# is the same rule the whole block now follows.
+# (`geometry.CATEGORY_FOR_BELOW`). A ground-coupled gap is a gap in the DRAWING whose
+# thermal treatment is the ordinary on-grade one every house already gets — there is no
+# buffer fraction and no full-ΔT surprise to warn a reader about, so the callout has
+# nothing to add beyond the gap itself. Saying nothing is a deliberate entry in this
+# table's contract, pinned by a test; it is not an oversight.
 #
 # Caveat worth knowing: this table hand-mirrors `geometry.CATEGORY_FOR_BELOW`'s values by
 # copy, not by import — `geometry` names the categories, this names what they mean to a
@@ -280,22 +281,19 @@ _VOID_TREATMENT = {
 
 
 def void_categories(env: geometry_mod.Envelope) -> list[str]:
-    """Which void categories this envelope carries, in a stable order; may be empty.
+    """Which categories THESE voids resolved to, in a stable order; may be empty.
 
     Public because `overview` renders the same claim in its own words and must not
     re-derive it: the first fix here left `overview` with a hardcoded fallback naming the
     very category the fix removed, so two modules disagreeing about this derivation is
     not hypothetical — it already happened once.
 
-    KNOWN LIMITATION: this answers "which void categories does this envelope contain
-    anywhere", not "which categories did THESE voids become". A model whose levels name
-    different `below_void`s carries both, and every caller then states both — one of them
-    describing an area the voids did not produce. Closing it means carrying the category
-    on the void itself (deferred, and recorded in
-    `docs/2026-08-13-level-stack-model-design.md` § Scope / deferred); until then callers
-    must not present a per-category area as if it were the void's own.
+    Read off `env.voids`, never off `env.surfaces`. Asking the envelope's whole surface set
+    answers "which void categories does this model contain ANYWHERE", which is a different
+    question: a `below_void: ground` gap on a house with a drawn crawlspace came back
+    `buffer_floor`, and an `outdoor` gap beside a drawn crawlspace came back as both.
     """
-    present = {s.category for s in env.surfaces}
+    present = {v.category for v in env.voids.values()}
     return [c for c in _VOID_TREATMENT if c in present]
 
 
@@ -303,9 +301,9 @@ def _voids_block(env: geometry_mod.Envelope, sc: sidecar.SideCar) -> list[str]:
     """Conditioned floor with nothing drawn beneath it — a schematic gap, not a result."""
     if not env.voids:
         return []
-    ranked = sorted(env.voids.items(), key=lambda kv: kv[1], reverse=True)
+    ranked = sorted(env.voids.items(), key=lambda kv: kv[1].area_ft2, reverse=True)
     shown = ranked[:_VOID_TOP_N]
-    largest = ", ".join(f"{name} {area:,.1f} ft²" for name, area in shown)
+    largest = ", ".join(f"{name} {void.area_ft2:,.1f} ft²" for name, void in shown)
     of_n = f" ({len(shown)} of {len(ranked)} rooms)" if len(ranked) > len(shown) else ""
     categories = void_categories(env)
     # No horizontal surfaces to read the category off (a caller rendering a bare
@@ -316,8 +314,8 @@ def _voids_block(env: geometry_mod.Envelope, sc: sidecar.SideCar) -> list[str]:
         "",
         "### Schematic gaps",
         "",
-        f"⚠ **{sum(env.voids.values()):,.1f} ft² of conditioned floor has no level drawn "
-        f"beneath it**{modeled}.",
+        f"⚠ **{sum(v.area_ft2 for v in env.voids.values()):,.1f} ft² of conditioned floor "
+        f"has no level drawn beneath it**{modeled}.",
         "",
         # Bullets, not indented continuation lines: two-space indents are Markdown lazy
         # continuation and collapse the whole callout into one run-on paragraph.
@@ -340,9 +338,15 @@ def _voids_block(env: geometry_mod.Envelope, sc: sidecar.SideCar) -> list[str]:
     # so — for whichever category is in play, not just for the common one.
     for category in categories:
         borrowed_area = sum(s.area_ft2 for s in env.surfaces if s.category == category)
+        # The void's OWN share of that row, not the whole gap total. On a model where the
+        # gaps resolved to more than one category, quoting the whole total against each row
+        # would claim the same square footage twice over; on a single-category model it is
+        # the same number, so this reads correctly either way.
+        void_area = sum(v.area_ft2 for v in env.voids.values() if v.category == category)
         if loads.assembly_borrow(category, sc.assemblies) is not None:
             lines.append(
-                f"- Not a separate problem from the one above: this area is inside the "
+                f"- Not a separate problem from the one above: the {void_area:,.1f} ft² of "
+                f"that gap which resolved to `{category}` is inside the "
                 f"{borrowed_area:,.1f} ft² on the `{category}` row of *Borrowed assembly "
                 f"U-values* (which spans every `{category}` surface, drawn or not), so "
                 f"the two figures nest rather than add.")

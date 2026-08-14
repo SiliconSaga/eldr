@@ -95,7 +95,11 @@ def analysis_to_dict(a) -> dict:
         "levels": {name: {"height_ft": h} for name, h in a.env.level_heights_ft.items()},
         "spaces": _space_factors(a),
         # Present even when empty, so a consumer can tell "no gaps" from "old export".
-        "voids": dict(a.env.voids),
+        # `category` is the surface category THAT gap resolved to, carried from the
+        # resolver rather than re-derived from the envelope; it is null only when rooms
+        # sharing a name resolved to different categories (see `geometry.Void`).
+        "voids": {name: {"area_ft2": v.area_ft2, "category": v.category}
+                  for name, v in a.env.voids.items()},
         # New in this cut: the whole-house horizontal split becomes inspectable without
         # re-deriving it. `space` is null for anything not facing a buffer space.
         "surfaces": [

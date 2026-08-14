@@ -86,11 +86,18 @@ class FaceSplit:
     and ceiling faces something. `void_below_ft2` is the measured area that survived the
     misalignment tolerance with nothing drawn beneath it, reported so a schematic gap
     stays visible; it is not part of that sum's bookkeeping.
+
+    `void_space` names what that surviving gap was resolved to face — the level's
+    `below_void`, or the house default. It is None exactly when `void_below_ft2` is 0.
+    Reported alongside the area because the pairing is known here and nowhere downstream:
+    an aggregate that keeps only the area forces its consumers to guess the category back
+    out of the whole envelope, which is a different question with a different answer.
     """
     room_id: str
     below: dict[str, float]
     above: dict[str, float]
     void_below_ft2: float = 0.0
+    void_space: str | None = None
 
 
 def _bbox(points):
@@ -320,7 +327,16 @@ def resolve_faces(levels: list[LevelInfo], rooms_by_level: dict[str, list[dict]]
                                          else _space_name(by_id[cand.id]))
                                 break
                         if is_below:
-                            if found is None and level.id == lowest_conditioned:
+                            # The lowest conditioned storey sits on grade unless told
+                            # otherwise, so an undrawn gap beneath it is soil, not
+                            # crawlspace. `lv_below is None` is the "unless": an explicit
+                            # `levels.<name>.below_void` is the modeler answering this
+                            # exact question, and it has to outrank the guess. Without that
+                            # guard a single-storey house with `below_void: outdoor` still
+                            # emitted a ground-coupled `floor`, which made `exposed_floor`
+                            # unreachable by its only documented route.
+                            if (found is None and level.id == lowest_conditioned
+                                    and lv_below is None):
                                 found = "ground"
                             below_cells[(ix, iy)] = found      # None => nothing drawn
                         else:
@@ -339,5 +355,6 @@ def resolve_faces(levels: list[LevelInfo], rooms_by_level: dict[str, list[dict]]
                 below=_to_room_area(_tidy(below, min_region_ft2), area_ft2),
                 above=_to_room_area(_tidy(above, min_region_ft2), area_ft2),
                 void_below_ft2=void_ft2,
+                void_space=this_below_void if void_ft2 > 0.0 else None,
             )
     return out

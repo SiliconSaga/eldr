@@ -153,9 +153,18 @@ def test_render_manual_d_with_unit_shows_lengths_and_derivation():
 # ---------------------------------------------------------------- assumptions echoes
 
 def _env(surfaces=(), voids=None, level_heights=None, level_volumes=None):
+    """`voids` maps a room name to `(area_ft2, category)`.
+
+    The category is spelled out at every call site on purpose. It is the surface category
+    THAT gap resolved to, and the report reads it off the void itself — a fixture that let
+    it default would let a block go back to inferring it from `surfaces` without any test
+    noticing, which is the exact defect this shape exists to prevent.
+    """
     return geometry.Envelope(
         surfaces=list(surfaces), volume_ft3=10000.0,
-        voids=dict(voids or {}), level_heights_ft=dict(level_heights or {}),
+        voids={name: geometry.Void(area, category)
+               for name, (area, category) in (voids or {}).items()},
+        level_heights_ft=dict(level_heights or {}),
         level_volumes_ft3=dict(level_volumes or {}))
 
 
@@ -186,7 +195,8 @@ def test_report_warns_about_void_floor_area_by_room():
     # Insertion order is deliberately area-ASCENDING, so it fights the ranking assertion
     # below. With the rooms the other way round (as they first arrived here) a plain
     # `for name, area in env.voids.items()` passes the ordering check by coincidence.
-    env = _env(voids={"Kitchen": 12.8, "Main Bed": 120.1})
+    env = _env(voids={"Kitchen": (12.8, "buffer_floor"),
+                      "Main Bed": (120.1, "buffer_floor")})
     md = report.render_heating(_result(), _sc(), env=env)
     assert "no level drawn beneath" in md
     assert "Main Bed" in md and "120.1" in md
@@ -197,7 +207,8 @@ def test_report_warns_about_void_floor_area_by_room():
 
 def test_report_void_callout_lists_only_the_largest_rooms_and_counts_the_rest():
     """"Largest:" must mean it. Listing every room makes the label a lie on a real model."""
-    env = _env(voids={"A": 1.0, "B": 2.0, "C": 3.0, "D": 4.0, "E": 5.0})
+    env = _env(voids={n: (a, "buffer_floor") for n, a in
+                      (("A", 1.0), ("B", 2.0), ("C", 3.0), ("D", 4.0), ("E", 5.0))})
     md = report.render_heating(_result(), _sc(), env=env)
     callout = next(l for l in md.splitlines() if l.startswith("- Largest"))
     assert "3 of 5 rooms" in callout
@@ -209,7 +220,7 @@ def test_report_void_callout_lists_only_the_largest_rooms_and_counts_the_rest():
 def test_report_void_callout_uses_real_line_breaks_not_lazy_continuation():
     """Two-space-indented follow-on lines are Markdown lazy continuation: they render as
     one run-on paragraph, so the callout a reader sees is not the callout in the source."""
-    env = _env(voids={"Main Bed": 120.1})
+    env = _env(voids={"Main Bed": (120.1, "buffer_floor")})
     md = report.render_heating(_result(), _sc(), env=env)
     assert "### Schematic gaps" in md         # its own heading, like its sibling blocks
     lines = md.splitlines()
@@ -235,7 +246,7 @@ def _void_and_borrow_env():
     """A void of 149.5 ft² inside 293.5 ft² of buffer floor — the Refrhus shape, where the
     other 144.0 ft² is crawl floor that IS drawn. Deliberately unequal so a cross-reference
     quoting the void total instead of the borrowed total is visible."""
-    return _env(voids={"Main Bed": 149.5},
+    return _env(voids={"Main Bed": (149.5, "buffer_floor")},
                 surfaces=[geometry.Surface("buffer_floor", 149.5, "crawlspace"),
                           geometry.Surface("buffer_floor", 144.0, "crawlspace")])
 
@@ -268,7 +279,7 @@ def _exposed_void_env():
     maps the `outdoor` space to `exposed_floor`, and `spaces` gives `outdoor` factor 1.0.
     Nothing here is a `buffer_floor`, so a block that hardcodes the common category
     describes a surface this envelope does not contain."""
-    return _env(voids={"Sunroom": 64.6},
+    return _env(voids={"Sunroom": (64.6, "exposed_floor")},
                 surfaces=[geometry.Surface("exposed_floor", 64.6, "outdoor")])
 
 
@@ -301,11 +312,12 @@ def test_report_cross_references_the_borrow_on_the_exposed_floor_branch_too():
 
 
 def test_report_makes_no_treatment_claim_when_it_cannot_name_the_category():
-    """`below_void: ground` resolves a void to a ground-coupled `floor`, which is not a
-    category this block can key off — nearly every model has an on-grade floor, so its
-    presence proves nothing. Say nothing rather than guess: a wrong category here is
-    also a wrong ΔT, and the phrasing sounds careful either way."""
-    env = _env(voids={"Sunroom": 64.6},
+    """`below_void: ground` resolves a void to a ground-coupled `floor`, which is the one
+    category `_VOID_TREATMENT` deliberately omits — its treatment is the ordinary on-grade
+    one, so the callout has nothing to add beyond the gap itself. Say nothing rather than
+    guess: a wrong category here is also a wrong ΔT, and the phrasing sounds careful
+    either way."""
+    env = _env(voids={"Sunroom": (64.6, "floor")},
                surfaces=[geometry.Surface("floor", 64.6, None)])
     md = report.render_heating(_result(), _sc_slab(), env=env)
     warning = next(l for l in md.splitlines() if l.startswith("⚠ **"))
@@ -313,6 +325,73 @@ def test_report_makes_no_treatment_claim_when_it_cannot_name_the_category():
     assert "modeled as" not in warning
     assert "buffer" not in md.lower()
     assert "Not a separate problem" not in md         # nothing to cross-reference either
+
+
+def test_a_ground_void_is_not_relabelled_by_an_unrelated_drawn_crawlspace():
+    """The category came off the ENVELOPE's whole surface set, which answers "does this
+    model contain a `buffer_floor` anywhere" — not "what did this gap become". Here the
+    gap is ground-coupled (`below_void: ground`) and the `buffer_floor` in the envelope is
+    a DRAWN crawlspace floor somewhere else entirely. The old derivation reported the gap
+    as a buffer floor at a buffer's fraction of ΔT: wrong category, wrong physics, stated
+    with no hedge.
+    """
+    env = _env(voids={"Sunroom": (64.6, "floor")},
+               surfaces=[geometry.Surface("floor", 64.6, None),
+                         geometry.Surface("buffer_floor", 144.0, "crawlspace")])
+    md = report.render_heating(_result(), _sc_slab(), env=env)
+    warning = next(l for l in md.splitlines() if l.startswith("⚠ **"))
+    assert warning.endswith("has no level drawn beneath it**.")   # the gap, and no more
+    assert "buffer_floor" not in warning
+    assert "Not a separate problem" not in md     # nor a cross-reference into that row
+
+
+def test_a_gap_is_described_only_by_its_own_category_not_every_one_in_the_envelope():
+    """An `outdoor` gap beside a drawn crawlspace floor. Reading the categories off the
+    envelope named BOTH, so the callout claimed the same 64.6 ft² was simultaneously at the
+    full outdoor ΔT and at the crawlspace's fraction of it, and then cross-referenced it
+    into a borrow row it is not part of — an arithmetic impossibility on the page.
+    """
+    env = _env(voids={"Sunroom": (64.6, "exposed_floor")},
+               surfaces=[geometry.Surface("exposed_floor", 64.6, "outdoor"),
+                         geometry.Surface("buffer_floor", 144.0, "crawlspace")])
+    md = report.render_heating(_result(), _sc_slab(), env=env)
+    assert report.void_categories(env) == ["exposed_floor"]
+    warning = next(l for l in md.splitlines() if l.startswith("⚠ **"))
+    assert "`exposed_floor`" in warning
+    assert "buffer_floor" not in warning
+    # exactly one cross-reference, and it quotes the VOID's own share (64.6), not the
+    # 144.0 ft² of drawn crawlspace floor nor the 208.6 ft² the two would sum to.
+    callouts = [l for l in md.splitlines() if l.startswith("- Not a separate problem")]
+    assert len(callouts) == 1
+    assert "64.6 ft²" in callouts[0] and "`exposed_floor`" in callouts[0]
+    assert "144.0 ft²" not in callouts[0] and "208.6 ft²" not in callouts[0]
+
+
+def test_each_cross_reference_quotes_its_own_categorys_share_of_the_gap():
+    """Two gaps that resolved differently: 149.5 ft² over undrawn crawl and 64.6 ft² over
+    open air, against 293.5 ft² of `buffer_floor` (the rest of it drawn) and 64.6 ft² of
+    `exposed_floor`. Each bullet has to quote ITS category's share, not the 214.1 ft² the
+    warning totals — a shared total would claim the crawl gap is inside the exposed-floor
+    row and vice versa, which is false in both directions and unfalsifiable on the
+    single-category model every other test here uses.
+    """
+    env = _env(voids={"Main Bed": (149.5, "buffer_floor"),
+                      "Sunroom": (64.6, "exposed_floor")},
+               surfaces=[geometry.Surface("buffer_floor", 149.5, "crawlspace"),
+                         geometry.Surface("buffer_floor", 144.0, "crawlspace"),
+                         geometry.Surface("exposed_floor", 64.6, "outdoor")])
+    md = report.render_heating(_result(), _sc_slab(), env=env)
+    assert "214.1 ft²" in next(l for l in md.splitlines() if l.startswith("⚠ **"))
+
+    callouts = [l for l in md.splitlines() if l.startswith("- Not a separate problem")]
+    assert len(callouts) == 2
+    buffer_line = next(l for l in callouts if "`buffer_floor`" in l)
+    exposed_line = next(l for l in callouts if "`exposed_floor`" in l)
+    assert "149.5 ft²" in buffer_line and "293.5 ft²" in buffer_line
+    assert "64.6 ft²" in exposed_line
+    # neither bullet quotes the whole-gap total, nor the other category's share
+    assert "214.1 ft²" not in buffer_line and "214.1 ft²" not in exposed_line
+    assert "64.6 ft²" not in buffer_line and "149.5 ft²" not in exposed_line
 
 
 # `floor` is the one category deliberately left out of `_VOID_TREATMENT`, and the reason
@@ -617,7 +696,8 @@ def test_schematic_gaps_says_undrawn_rooms_inflate_the_wall_area_too():
     with a conditioned room on only one side reads as exterior, so the envelope wall area
     inflates as well. Stated as mechanism + direction, never as a figure — undrawn space
     leaves nothing to measure."""
-    md = report.render_heating(_result(), _sc(), env=_env(voids={"Main Bed": 120.1}))
+    md = report.render_heating(_result(), _sc(),
+                               env=_env(voids={"Main Bed": (120.1, "buffer_floor")}))
     bullet = next(l for l in md.splitlines() if l.startswith("- Undrawn rooms"))
     assert "one side" in bullet
     assert "inflates" in bullet and "wall area" in bullet
