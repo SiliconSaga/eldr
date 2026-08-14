@@ -71,10 +71,11 @@ def _assumptions_section(env: geometry_mod.Envelope, sc: sidecar.SideCar) -> lis
     Four things the engine decided quietly and the reader cannot otherwise see: the
     storey height each level was given, the ΔT fraction each buffer space resolved to,
     any U-value that had to be borrowed from a related assembly, and any floor area
-    modeled over a space nobody drew.
+    modeled over a space nobody drew — then the open questions those decisions leave.
     """
     blocks = (_levels_block(env, sc) + _spaces_block(env, sc)
-              + _borrows_block(env, sc) + _voids_block(env, sc))
+              + _borrows_block(env, sc) + _voids_block(env, sc)
+              + _open_questions_block(env, sc))
     if not blocks:
         return []
     return ["", "## Assumptions behind these numbers"] + blocks
@@ -322,6 +323,15 @@ def _voids_block(env: geometry_mod.Envelope, sc: sidecar.SideCar) -> list[str]:
         # continuation and collapse the whole callout into one run-on paragraph.
         f"- Largest{of_n}: {largest}.",
         "- Draw those spaces in Sweet Home 3D to replace the assumption with geometry.",
+        # The same root cause — space that exists but was never drawn as a room — with a
+        # different symptom, and the one place a reader would actually notice it. The area
+        # is unmeasurable (undrawn space leaves nothing to measure), so this states the
+        # mechanism and the direction only, never a figure.
+        "- Undrawn rooms distort the WALLS too, not just the floor: a wall is on the "
+        "envelope when a conditioned room sits on exactly one side of it, so floor area "
+        "left undrawn on a level makes the walls bordering it read as facing outdoors. "
+        "Every such wall is counted as exterior, which inflates the envelope wall area and "
+        "the conduction above with it, until the rooms are drawn.",
     ]
     # This block and the borrow table above describe the SAME floor — a void becomes one
     # of these categories, whose U-value is then borrowed. Laid out as two adjacent
@@ -337,6 +347,66 @@ def _voids_block(env: geometry_mod.Envelope, sc: sidecar.SideCar) -> list[str]:
                 f"U-values* (which spans every `{category}` surface, drawn or not), so "
                 f"the two figures nest rather than add.")
     return lines
+
+
+def _open_questions_block(env: geometry_mod.Envelope, sc: sidecar.SideCar) -> list[str]:
+    """Places where the engine's own conventions could reasonably be read another way.
+
+    Not a defect list and not a hedge — each entry names a choice Eldr made, states the
+    assumption about the INPUTS that choice rests on, and says which way the number moves
+    if that assumption does not hold. That is something the engine can say about itself;
+    anything phrased as agreement or disagreement with a particular third-party report
+    would be a claim about a document this program has never read.
+
+    Every entry is gated on the model actually containing the thing it describes, for the
+    same reason the borrow and void blocks are: a caveat about below-grade walls on a house
+    with no basement teaches the reader to skim the section.
+    """
+    below_grade = {s.category for s in env.surfaces} & loads.GROUND_COUPLED_CATEGORIES
+    bullets = []
+    if below_grade:
+        cats = ", ".join(f"`{c}`" for c in sorted(below_grade))
+        bullets += [
+            f"- **Below-grade surfaces ({cats}) are loaded at the full outdoor design ΔT**, "
+            f"the way Manual J loads them. That assumes the U-value declared for them is a "
+            f"Manual J *effective* below-grade value — the assembly plus the resistance of "
+            f"the path through the soil out to grade. If a bare wall-assembly U was "
+            f"supplied instead, the soil is missing from the calculation entirely and these "
+            f"rows overstate the heat loss.",
+            "- **One U-value per category, whatever the depth.** In Manual J practice the "
+            "effective below-grade U falls as the average depth below grade rises, because "
+            "the soil path gets longer — the same construction is tabulated at several "
+            "U-values for that reason. Eldr applies one `assemblies` number to every "
+            "surface in the category, so a wall that is part shallow and part deep gets "
+            "whichever single value was declared.",
+            "- **Below-grade surfaces contribute nothing to the cooling load**, because "
+            "soil below the summer setpoint is a heat sink rather than a source. Some "
+            "Manual J implementations do carry a small below-grade cooling load; against "
+            "one of those, these rows will read low.",
+        ]
+    if "basement_wall" in below_grade:
+        bullets.append(
+            "- **Eldr has no grade line.** Every wall on a basement level is classed "
+            "`basement_wall` over its whole height. Manual J practice splits the same "
+            "physical wall at grade: the buried portion gets the depth-dependent effective "
+            "U above, and the portion standing proud of grade is an ordinary above-grade "
+            "wall. If part of this model's basement wall is above grade, it is currently "
+            "carrying the below-grade assembly. Eldr cannot make that split — the reader "
+            "has to, either by drawing the wall as two segments or by declaring a "
+            "`basement_wall` U that averages the two.")
+    if env.level_heights_ft:
+        bullets.append(
+            "- **A wall's own height overrides its level's.** Wall AREA comes from each "
+            "wall's drawn height, not from the storey height in the *Level heights* table "
+            "above — that height sets the volume behind the infiltration term and nothing "
+            "else. The two can disagree with nothing in the model looking out of place, so "
+            "it is worth checking whenever a wall row reads larger or smaller than expected.")
+    if not bullets:
+        return []
+    return ["", "### Open questions", "",
+            "Neither errors nor warnings — assumptions in the numbers above that a careful "
+            "reader should check against their own house before trusting the total.",
+            ""] + bullets
 
 
 def _per_room_section(plan: ductmodel_mod.DuctPlan, whole_house_cfm: float) -> list[str]:
@@ -442,6 +512,28 @@ def _cooling_section(c: loads.CoolingResult, sc: sidecar.SideCar) -> list[str]:
         f"| **total** | **{c.total_btuh:,.0f}** |",
         "",
         f"**Supply airflow:** {c.cfm:,.0f} CFM",
+        # Blank line, not a bare newline: two adjacent lines are ONE Markdown paragraph, so
+        # without it the rendered document reads "...476 CFM **Sensible heat ratio:** 0.75".
+        "",
+        f"**Sensible heat ratio:** {c.sensible_btuh / c.total_btuh:.2f} "
+        f"(sensible ÷ total) — how much of the job is temperature rather than moisture. "
+        f"A standard Manual J figure, directly comparable against any professional report, "
+        f"and an equipment-selection input: the lower it runs, the more of the load is "
+        f"dehumidification, which calls for a coil that stays wet rather than a bigger one.",
+        "",
+        # The three summary rows sat flush against the component rows above them with
+        # nothing to say they were a different KIND of number, so the natural reading was
+        # "sensible, latent and total are three more components" — and then "why is the
+        # airflow not sized on the biggest one?"
+        "_Those last three rows are not three more components. Every itemised row above "
+        "them is sensible heat, and they sum to **sensible** — the heat that has to leave "
+        "to hold the dry-bulb setpoint. **Latent** is a separate quantity: moisture, from "
+        "the occupants and from the humidity the infiltrating air carries in. That is why "
+        "it has no component breakdown — no wall, window or roof contributes to it. "
+        "**Total** is simply the two added. Supply airflow is sized on **sensible** alone, "
+        "not on the total, which is why the CFM does not come off the bottom line: air "
+        "carries the sensible load by temperature difference, while the latent load leaves "
+        "as condensate at the coil rather than by moving more air._",
         "",
         "_Solar reads each window's exact bearing (grouped for display by nearest "
         "8-point, e.g. `solar-SW`), from the model's compass `northDirection`._",

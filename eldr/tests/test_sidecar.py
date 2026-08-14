@@ -287,7 +287,6 @@ def test_ground_temp_parsed(tmp_path):
     """
     sc = sidecar.load_sidecar(_write(tmp_path, body))
     assert sc.design.ground_temp_f == 55
-    assert sc.design.ground_heating_delta_t == 70 - 55       # indoor 70 - ground 55
 
 
 def test_load_sidecar_rejects_bad_values(tmp_path):

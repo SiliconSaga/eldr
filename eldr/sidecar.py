@@ -32,7 +32,12 @@ class DesignConditions:
     indoor_heating_f: float
     outdoor_heating_99_f: float | None   # None -> resolved from lat/long (see climate)
     supply_air_rise_f: float
-    ground_temp_f: float = DEFAULT_GROUND_TEMP_F   # deep-soil temp for below-grade surfaces
+    # Deep-soil temp. COOLING ONLY: it decides whether the soil is a heat source in summer
+    # (almost never — see loads.GROUND_COUPLED_CATEGORIES). Heating does NOT read it, and
+    # there is deliberately no `ground_heating_delta_t` counterpart: a below-grade
+    # assembly U is already an effective value containing the soil path, so discounting
+    # the winter ΔT for soil as well would count the same resistance twice.
+    ground_temp_f: float = DEFAULT_GROUND_TEMP_F
 
     @property
     def heating_delta_t(self) -> float:
@@ -40,15 +45,6 @@ class DesignConditions:
             raise ValueError("outdoor_heating_99_f is unresolved — set it in the side-car "
                              "or provide the model's lat/long for a climate lookup")
         return self.indoor_heating_f - self.outdoor_heating_99_f
-
-    @property
-    def ground_heating_delta_t(self) -> float:
-        """Heating ΔT for below-grade surfaces — coupled to soil, not outdoor air.
-
-        Clamped at 0: if the soil is warmer than the indoor setpoint the surface
-        gains heat rather than losing it, which a heating load shouldn't count.
-        """
-        return max(0.0, self.indoor_heating_f - self.ground_temp_f)
 
 
 @dataclass(frozen=True)

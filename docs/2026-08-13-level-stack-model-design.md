@@ -119,13 +119,36 @@ Extending the wall-boundary table to horizontal surfaces:
 
 | Surface | Heating ΔT | Cooling ΔT | Assembly key |
 |---|---|---|---|
-| `floor` | ground ΔT (soil) | max(0, ground − indoor) | `floor` |
+| `floor` | outdoor ΔT (see below) | max(0, ground − indoor) | `floor` — **effective** below-grade U |
 | `buffer_floor` | space factor × outdoor ΔT | space factor × cooling ΔT | `buffer_floor` → falls back to `exposed_floor`, then `floor` |
 | `exposed_floor` | outdoor ΔT | outdoor ΔT | `exposed_floor` → falls back to `floor` |
 | `ceiling` | attic policy ΔT | attic policy ΔT (sol-air) | `ceiling` |
 | *interior* | — (no surface emitted) | — | — |
 
 A conditioned room above another conditioned room emits **no** horizontal surface — that is the interior case, and it is why the resolver must distinguish "conditioned below" from "nothing below."
+
+### Below grade: the soil lives in the U, not in the ΔT
+
+This design originally gave `floor` and `basement_wall` a *ground* heating ΔT — `indoor − design.ground_temp_f`, 20 °F against the outdoor air's 55 °F on Refrhus — on the reasoning that a buried surface loses heat to ~50 °F soil rather than to design-cold air. That is intuitive and it is not what Manual J does, and paired with an *effective* below-grade U it double-counted the soil: the U already contained the soil path, and the ΔT then discounted it a second time.
+
+The corrected treatment: **heating loads every below-grade surface at the full outdoor design ΔT**, and the soil path is the side-car's responsibility, expressed in the assembly U-value. `design.ground_heating_delta_t` is gone; `design.ground_temp_f` survives, read by the cooling path alone.
+
+The evidence is a certified ACCA-approved Manual J on the Refrhus house itself. Divide each below-grade row's heating HTM by its U-value and the quotient is the same for every one of them:
+
+| Wall | Area | U | Heating HTM | HTM ÷ U |
+|---|---:|---:|---:|---:|
+| Avg depth 3 ft, 8" stone/brick, R-0, unfinished | 186.8 | 0.293 | 16.58 | 56.6 |
+| Avg depth 4 ft, 8" stone/brick, R-0, unfinished | 215.4 | 0.297 | 16.82 | 56.6 |
+| Avg depth 3 ft, 8" stone/brick, wood frame R-11, finished | 371.6 | 0.088 | 4.98 | 56.6 |
+| Basement slab (>2 ft below grade), no insulation | 713.9 | 0.020 | 1.13 | 56.5 |
+
+56.6 is their design ΔT: 70 − 13 = 57, times a 0.995 elevation factor = 56.7. Every below-grade surface is at the **full** outdoor ΔT. Two tells confirm the soil is inside the U instead: U-0.293 is far below bare 8" masonry (nearer U-1.0 on its own), and the same construction is listed at two U-values because the soil path lengthens with average depth below grade.
+
+**Cooling is untouched** and stays ground-coupled at `max(0, ground_temp_f − cooling.indoor_f)` — zero for a normal house. The same report corroborates it: its basement-slab *cooling* HTM is 0.00.
+
+The cost of this is a side-car contract that is easy to get wrong in one direction only — declare a bare-wall U and the heating load is silently overstated. It is stated in `README.md` § *Below-grade U-values are effective values*, in `eldr/example-sidecar.yaml`'s `assemblies:` header, on `loads.GROUND_COUPLED_CATEGORIES`, and in the generated report's *Open questions* block.
+
+**Known gaps, deliberately left open** (all surfaced in that report block): Eldr applies one U per category regardless of average depth, while Manual J indexes below-grade U *by* depth; and Eldr has no grade line, so a basement-level wall is `basement_wall` over its full drawn height where Manual J would split it at grade and count the upper portion as an ordinary above-grade wall.
 
 `Surface` gains an optional `space: str | None` field carrying *which* buffer space the surface faces, because a category alone can no longer determine ΔT once policies are per-space — a `buffer_floor` over the crawl and one over the garage are the same category with different factors. The ΔT resolvers in `loads.py` therefore take the `Surface` rather than its category string. The field defaults to `None`, so every existing construction site keeps working.
 

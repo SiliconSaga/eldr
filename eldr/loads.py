@@ -21,8 +21,23 @@ INTERNAL_LATENT_PER_OCCUPANT = 200.0    # BTU/hr latent per person
 APPLIANCE_SENSIBLE_BTUH = 1200.0        # lights + appliances baseline
 LATENT_GRAINS_DIFF = 30.0               # indoor/outdoor humidity ratio diff (grains/lb)
 COOLING_SUPPLY_DT_F = 20.0              # supply-air below room, for cooling CFM
-# Surfaces coupled to soil rather than outdoor air — they see the ground ΔT, not the
-# air ΔT (a basement wall against 50°F soil loses far less than one against 15°F air).
+# Surfaces that sit against soil rather than outdoor air.
+#
+# HEATING loads them at the FULL outdoor design ΔT, exactly like an exterior wall. That is
+# not an oversight: in Manual J the soil path lives in the *assembly*, not in the ΔT. A
+# below-grade U-value is an EFFECTIVE one — the wall's own resistance plus the resistance
+# of the path through the soil to grade — which is why a certified report lists bare 8"
+# masonry at U-0.29 when the masonry alone is nearer U-1.0, and why the same construction
+# gets a lower U the deeper it sits (a longer soil path). Applying a ground ΔT on top of
+# such a U discounts the same soil twice; running the certified numbers backwards, every
+# below-grade row on a professional report divides out to the full outdoor design ΔT.
+# The side-car owns the soil, therefore, and `assemblies.basement_wall` / `assemblies.floor`
+# must be effective below-grade values — see README § Modeling decisions.
+#
+# COOLING is genuinely different and keeps its ground coupling: soil sitting *below* the
+# summer setpoint is a heat sink, not a source, so these surfaces are held at
+# max(0, ground − indoor) — zero for any normal house. Certified reports agree: a basement
+# slab's cooling HTM is 0.00.
 GROUND_COUPLED_CATEGORIES = frozenset({"basement_wall", "floor"})
 
 # ============================ BUFFER WALLS ============================
@@ -95,10 +110,10 @@ class RoomLoad:
 def _conduction(surfaces, assemblies, dt_for):
     """UA·ΔT conduction over a surface list; `dt_for(surface)` gives the ΔT to use.
 
-    The resolver takes the whole surface, not just its category: below-grade surfaces
-    use the ground ΔT, a surface facing a buffer space uses that space's own factor
-    (two `buffer_floor`s over different spaces differ), and everything else uses the
-    outdoor-air ΔT. Returns (total, by_category).
+    The resolver takes the whole surface, not just its category: a surface facing a buffer
+    space uses that space's own factor (two `buffer_floor`s over different spaces differ),
+    below-grade surfaces are ground-coupled in summer and air-coupled in winter, and
+    everything else uses the outdoor-air ΔT. Returns (total, by_category).
     """
     by_category: dict[str, float] = {}
     total = 0.0
@@ -167,14 +182,19 @@ def _u_value(category, assemblies):
 
 
 def _heating_dt_for(design, declared_spaces) -> Callable[[geometry.Surface], float]:
-    """ΔT resolver for heating: ground ΔT below grade, the space's own factor for any
-    surface facing a buffer space, outdoor-air ΔT elsewhere."""
-    air, ground = design.heating_delta_t, design.ground_heating_delta_t
+    """ΔT resolver for heating: the space's own factor for any surface facing a buffer
+    space, outdoor-air ΔT everywhere else — below-grade surfaces included."""
+    air = design.heating_delta_t
     indoor, outdoor = design.indoor_heating_f, design.indoor_heating_f - air
 
     def dt(s):
         if s.category in GROUND_COUPLED_CATEGORIES:
-            return ground
+            # The full air ΔT, deliberately — the soil path is in the assembly U, see
+            # GROUND_COUPLED_CATEGORIES. Written as its own branch rather than left to
+            # fall through so that it wins over the buffer-space branch below exactly as
+            # it does in `_cooling_dt_for`: the two resolvers must never disagree about
+            # what a below-grade surface IS, only about the ΔT it sees.
+            return air
         if s.space is not None:
             policy = spaces.policy_for(s.space, declared_spaces)
             return spaces.heating_factor(policy, indoor, outdoor) * air

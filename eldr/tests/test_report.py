@@ -540,3 +540,113 @@ def test_report_omits_the_borrow_block_when_every_assembly_is_declared():
     env = _env(surfaces=[geometry.Surface("buffer_floor", 149.5, "crawlspace")])
     md = report.render_heating(_result(), sc, env=env)
     assert "Borrowed assembly" not in md
+
+
+# ---------------------------------------------------------------- open questions
+
+def _below_grade_env(*categories, level_heights=None):
+    return _env(surfaces=[geometry.Surface(c, 100.0) for c in categories],
+                level_heights=level_heights)
+
+
+def _questions(md):
+    """The bullet lines of the Open questions block, or [] if it did not render."""
+    if "### Open questions" not in md:
+        return []
+    tail = md.split("### Open questions", 1)[1]
+    return [l for l in tail.splitlines() if l.startswith("- ")]
+
+
+def test_open_questions_states_the_below_grade_contract_and_which_way_it_errs():
+    """The one side-car input that is silently wrong in a single direction: a bare-wall U
+    where an effective below-grade one belongs. Naming the assumption is not enough — the
+    reader needs the DIRECTION, or "check your U-value" is advice with no consequence."""
+    md = report.render_heating(_result(), _sc(),
+                               env=_below_grade_env("basement_wall", "floor"))
+    contract = next(q for q in _questions(md) if "full outdoor design ΔT" in q)
+    assert "`basement_wall`, `floor`" in contract     # both categories this model carries
+    assert "effective" in contract and "soil" in contract
+    assert "overstate" in contract                   # the direction of the error
+
+
+def test_open_questions_covers_depth_cooling_and_the_missing_grade_line():
+    # Level heights too, so the tone assertion below sees EVERY bullet the block can emit,
+    # not just the below-grade ones — that gap let "looking wrong" through once already.
+    md = report.render_heating(_result(), _sc(),
+                               env=_below_grade_env("basement_wall", "floor",
+                                                    level_heights={"Main": 8.0}))
+    qs = _questions(md)
+    assert any("depth" in q and "one" in q.lower() for q in qs)          # one U per category
+    assert any("nothing to the cooling load" in q and "heat sink" in q for q in qs)
+    assert any("grade line" in q for q in qs)
+    # Neutral observations, not accusations — and about the ENGINE'S own assumptions, not
+    # about anyone else's document. This report is generated; a third-party report is
+    # something it has never read and cannot agree or disagree with.
+    prose = " ".join(qs).lower()
+    assert not any(w in prose for w in ("bug", "wrong", "incorrect", "should have"))
+    assert not any(w in prose for w in ("professional report", "certified report",
+                                        "their report", "acca-approved"))
+
+
+def test_open_questions_omits_the_grade_line_note_without_basement_walls():
+    """A slab-only house has no basement wall to split at grade — the note would send the
+    reader looking for a surface the model does not contain."""
+    qs = _questions(report.render_heating(_result(), _sc(), env=_below_grade_env("floor")))
+    assert qs                                        # the other below-grade notes stand
+    assert not any("grade line" in q for q in qs)
+
+
+def test_open_questions_absent_when_nothing_below_grade_and_no_levels():
+    md = report.render_heating(_result(), _sc(),
+                               env=_env(surfaces=[geometry.Surface("exterior_wall", 100.0)]))
+    assert "### Open questions" not in md
+
+
+def test_open_questions_separates_wall_height_from_the_level_height_table():
+    """The Level heights table reports the height behind the VOLUME. Wall area comes from
+    each wall's own drawn height, and the two can disagree with nothing looking wrong."""
+    md = report.render_heating(_result(), _sc(),
+                               env=_below_grade_env(level_heights={"Main": 8.0}))
+    note = next(q for q in _questions(md) if "wall's own height" in q)
+    assert "area" in note.lower() and "volume" in note
+    assert "Level heights" in note                   # points at the table it qualifies
+
+
+def test_schematic_gaps_says_undrawn_rooms_inflate_the_wall_area_too():
+    """Undrawn floor area has a second symptom the void bullets never mentioned: a wall
+    with a conditioned room on only one side reads as exterior, so the envelope wall area
+    inflates as well. Stated as mechanism + direction, never as a figure — undrawn space
+    leaves nothing to measure."""
+    md = report.render_heating(_result(), _sc(), env=_env(voids={"Main Bed": 120.1}))
+    bullet = next(l for l in md.splitlines() if l.startswith("- Undrawn rooms"))
+    assert "one side" in bullet
+    assert "inflates" in bullet and "wall area" in bullet
+
+
+# ---------------------------------------------------------------- cooling explanation
+
+def test_cooling_section_reports_the_sensible_heat_ratio():
+    """SHR = sensible / TOTAL — 20,000 / 24,000. The plausible wrong denominators are all
+    distinguishable here: latent/total is 0.17 and sensible/sensible is 1.00."""
+    md = report.render_heating(_result(), _sc_cool(), cooling=_cooling())
+    lines = md.splitlines()
+    i = next(n for n, l in enumerate(lines) if l.startswith("**Sensible heat ratio:**"))
+    assert "0.83" in lines[i]
+    assert "0.17" not in lines[i] and "1.00" not in lines[i]
+    # Its own paragraph. Adjacent lines are one Markdown paragraph, so without the blank
+    # the reader sees "...476 CFM **Sensible heat ratio:** 0.75" run together — the same
+    # lazy-continuation trap the void callout already fell into.
+    assert lines[i - 1] == ""
+    assert lines[i - 2].startswith("**Supply airflow:**")
+
+
+def test_cooling_section_explains_what_sensible_latent_and_total_are():
+    """They rendered as three more component rows, flush against the itemised ones, so the
+    reader had no way to see they are a different kind of number — nor why the airflow is
+    not sized on the largest of them."""
+    md = report.render_heating(_result(), _sc_cool(), cooling=_cooling())
+    note = next(l for l in md.splitlines() if l.startswith("_Those last three rows"))
+    assert "not three more components" in note
+    assert "no component breakdown" in note          # why latent has no rows of its own
+    assert "occupants" in note and "infiltrating air" in note   # where latent comes from
+    assert "sized on **sensible** alone" in note     # and why the CFM misses the total

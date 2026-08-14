@@ -4,16 +4,32 @@ design:
   # outdoor_heating_99_f:     # omitted -> looked up from the model's lat/long (nearest station).
   #                           # Set it here to override with your exact ACCA design temp.
   supply_air_rise_f: 50       # supply-air temperature rise over room, for CFM sizing
-  ground_temp_f: 50           # deep-soil temp; below-grade walls + slab couple to this, not outdoor air
+  ground_temp_f: 50           # deep-soil temp. COOLING ONLY — it decides whether summer soil is a
+  #                             heat source (below the setpoint it is a sink, so below-grade
+  #                             surfaces add no cooling load). HEATING does not read it: below-grade
+  #                             walls + slab carry the FULL outdoor ΔT, with the soil path living in
+  #                             their effective U-value below.
 infiltration:
   ach: 0.5                    # whole-house air changes/hour (estimate; blower-door later)
 assemblies:                   # U-value, BTU/(hr*ft^2*F), per surface category
+  #
+  # BELOW GRADE (`basement_wall`, `floor`) TAKES AN *EFFECTIVE* U — the construction PLUS the
+  # resistance of the soil path out to grade — because Eldr loads these at the full outdoor
+  # design ΔT, the Manual J way. Effective U therefore FALLS as average depth below grade rises
+  # (longer soil path): a certified report lists bare 8" stone/brick at U-0.293 at 3 ft average
+  # depth and U-0.297 at 4 ft, where the masonry alone is nearer U-1.0. Take yours from the
+  # Manual J below-grade tables (by construction AND average depth), not from an assembly
+  # calculator. A bare-wall U here silently OVERSTATES the heating load. Eldr applies one value
+  # per category whatever the depth, and has no grade line — every basement-level wall is
+  # `basement_wall` full height — so average both in by hand. `design.ground_temp_f` is not a
+  # substitute: heating never reads it.
   exterior_wall: 0.09         # 2x4 + R-13-ish
-  basement_wall: 0.20         # 8in cinderblock, partly below grade
+  basement_wall: 0.20         # 8in cinderblock: EFFECTIVE below-grade U, soil path included
   window: 0.30                # double-pane
   door: 0.40
   ceiling: 0.026              # attic floor, well insulated
-  floor: 0.05                 # slab on grade: EFFECTIVE whole-area U (real loss is perimeter-edge)
+  floor: 0.05                 # slab on grade: EFFECTIVE whole-area U, soil path included (the real
+  #                             loss is perimeter-edge, so the whole-area number is deliberately tiny)
   # buffer_wall: 0.09         # wall to a garage/crawlspace; unset -> borrows `exterior_wall`
   # buffer_floor: 0.521       # framed floor over a crawl/garage, or over an UNDRAWN space.
   #                             # Unset -> borrows `exposed_floor`, then `floor` — and a slab's

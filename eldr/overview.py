@@ -36,8 +36,9 @@ _HOW_DETAILED = f"""## How detailed it gets
 - **The real footprint** — exterior walls follow the room-polygon outline, so a wall on
   an extension/wing is caught even off the bounding rectangle; unconditioned
   garage/crawlspace walls are excluded.
-- **Below-grade is ground-coupled** — basement walls + slab see ~50 °F soil, not design
-  air, so a partial basement stops dominating the load.
+- **Below-grade follows Manual J** — basement walls + slab carry the full outdoor design
+  ΔT for heating, with the soil path inside their effective U-value; in summer the soil is
+  a heat sink, so they add no cooling load.
 - **Buffer walls** — a wall to a garage/crawlspace is neither interior nor fully
   exterior; tagged `buffer`, it's loaded at **{loads.BUFFER_FACTOR:.0%} of the design
   ΔT**.
@@ -78,8 +79,10 @@ def _honesty(a) -> str:
     if a.station is not None:
         bullets.append(f"**Design weather is nearest-station** ({a.station.name}), not the "
                        "certified ASHRAE station for the address.")
-    bullets.append("**Below-grade coupling is coarse** — one ground temperature; it doesn't "
-                   "yet split a floor over the warm basement from one over a crawlspace.")
+    bullets.append("**Below-grade resistance rides on the side-car** — the soil path lives "
+                   "in the declared `basement_wall` / `floor` U-value, and Eldr applies one "
+                   "such value per category no matter how deep the surface sits or how much "
+                   "of a basement wall stands above grade.")
     if loads.BUFFER_WALL_CATEGORY in a.heating.by_category:
         bullets.append(f"**Buffer walls** use a flat {loads.BUFFER_FACTOR:.0%} of the design "
                        "ΔT (one factor for all buffers) and a whole-wall tag — no partial "
