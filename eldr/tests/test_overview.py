@@ -40,13 +40,16 @@ cooling:
 # Two levels where the upper one overhangs the lower by 600cm — the overhang has nothing
 # drawn beneath it, which is the schematic gap the void warning exists to name. The lower
 # level is NOT called "Basement": that name would turn its walls into `basement_wall`, a
-# category SIDECAR deliberately doesn't carry.
+# category SIDECAR deliberately doesn't carry. The two `elevationIndex` values are distinct
+# and match the stack order, as Sweet Home 3D writes them: the ordering here holds on
+# elevation alone, so equal indices would have made the fixture unlike real model output
+# while looking correct.
 VOID_FIXTURE = textwrap.dedent("""\
 <?xml version='1.0'?>
 <home version='7400' name='t' wallHeight='300'>
   <compass x='0' y='0' diameter='100' latitude='0.7105963' longitude='-1.2916551'/>
   <level id='LL' name='Lower' elevation='0.0' floorThickness='12.0' height='200' elevationIndex='0'/>
-  <level id='LM' name='Main' elevation='212.0' floorThickness='12.0' height='250' elevationIndex='0'/>
+  <level id='LM' name='Main' elevation='212.0' floorThickness='12.0' height='250' elevationIndex='1'/>
   <wall id='l-n' level='LL' xStart='0' yStart='0' xEnd='400' yEnd='0' height='200' thickness='10'/>
   <wall id='l-s' level='LL' xStart='0' yStart='300' xEnd='400' yEnd='300' height='200' thickness='10'/>
   <wall id='l-w' level='LL' xStart='0' yStart='0' xEnd='0' yEnd='300' height='200' thickness='10'/>

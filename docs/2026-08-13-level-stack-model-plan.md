@@ -1703,7 +1703,7 @@ Expected: all green.
 components/eldr/.venv/bin/python -m eldr.cli hoards/refrhus/Refrhus.sh3d hoards/refrhus/eldr-sidecar.yaml
 ```
 
-Sanity-check against the design doc's acceptance targets: ceiling area near 976 ft² total (≈517 second floor + ≈459 to attic), crawl-facing floor near 122 ft², a reported void near 120 ft² dominated by Main Bed, and the Kitchen void visible as a schematic gap. Figures will not match exactly — the side-car still carries the old assemblies until the hoard is updated — but the *areas* should land close. Investigate any that do not.
+Sanity-check against the design doc's acceptance targets: ceiling area near 976 ft² total (≈517 second floor + ≈459 to attic), crawl-facing floor near 122 ft², and a reported void near 120 ft² dominated by Main Bed. The **Kitchen void is expected to be absent**, not present: the shipped resolver settles voids by a morphological opening measured against the void's own boundary, which dissolves scatter that small entirely. That is a deliberate trade recorded in the design doc's *What actually shipped* section — it removed a systematic understatement of buffer-floor area at the cost of the small-scatter end of the itemization — so this criterion is met by the Kitchen gap NOT appearing. Figures will not match exactly — the side-car still carries the old assemblies until the hoard is updated — but the *areas* should land close. Investigate any that do not.
 
 - [ ] **Step 7: Commit**
 
