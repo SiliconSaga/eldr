@@ -410,6 +410,60 @@ def test_spaces_rejects_non_boolean_vented(tmp_path):
                         + "\n    spaces:\n      attic:\n        vented: sometimes\n")
 
 
+def _attic_summer(tmp_path, temp, space="attic", cooling=_COOLING):
+    return _write_and_load(tmp_path, BASE_SIDECAR + cooling
+                           + f"    spaces:\n      {space}:\n        summer_temp_f: {temp}\n")
+
+
+@pytest.mark.parametrize("temp", [70, 75], ids=["below-setpoint", "at-setpoint"])
+def test_spaces_rejects_an_attic_summer_temp_at_or_below_the_setpoint(tmp_path, temp):
+    """`cooling.attic_temp_f` has carried this bound since it was added; this is the SAME
+    quantity by a stronger route (an observation outranks the design figure), and it was
+    unguarded. The failure is silent, which is why it needs a bound rather than a warning:
+    `spaces._factor` clamps at 0, so a 70°F "attic" against a 75°F setpoint does not
+    produce a negative ΔT or an error — the ceiling's cooling gain simply vanishes, and
+    the whole-house total comes out lower with nothing pointing at why.
+    """
+    with pytest.raises(ValueError, match=r"spaces\['attic'\].summer_temp_f"):
+        _attic_summer(tmp_path, temp)
+
+
+def test_spaces_accepts_an_attic_summer_temp_above_the_setpoint(tmp_path):
+    """The other side of the bound — a hot attic is exactly what the field is for, so the
+    guard must not be satisfiable by rejecting every `summer_temp_f` on the attic."""
+    sc = _attic_summer(tmp_path, 130)
+    assert sc.spaces["attic"].summer_temp_f == 130.0
+
+
+@pytest.mark.parametrize("space", ["crawlspace", "garage"])
+def test_spaces_allows_a_cool_non_attic_summer_temp(tmp_path, space):
+    """Scoped to the attic ON PURPOSE. A crawlspace or garage sitting at or below the
+    summer setpoint is an ordinary observation, not a typo: it genuinely contributes no
+    cooling load, and `_factor`'s clamp to 0 is the right answer there. Widening the
+    guard to every space would reject a correct side-car — which is why the attic-only
+    scoping gets its own test rather than riding on the rejection case above.
+    """
+    sc = _attic_summer(tmp_path, 55, space=space)
+    assert sc.spaces[space].summer_temp_f == 55.0
+
+
+def test_spaces_attic_summer_temp_needs_no_cooling_block(tmp_path):
+    """A heating-only side-car is valid input and has no summer setpoint to compare
+    against, so the bound has nothing to say — it must skip, not raise or crash on the
+    absent `cooling`."""
+    sc = _attic_summer(tmp_path, 55, cooling="")
+    assert sc.cooling is None
+    assert sc.spaces["attic"].summer_temp_f == 55.0
+
+
+def test_spaces_attic_summer_temp_must_still_be_finite(tmp_path):
+    """The new bound does not supersede the pre-existing finite check, and cannot: `.inf`
+    is greater than the setpoint, so the hot-attic comparison waves it through. Both
+    guards have to stand, which is why this asserts the finite message specifically."""
+    with pytest.raises(ValueError, match="must be a finite number"):
+        _attic_summer(tmp_path, ".inf")
+
+
 def test_levels_block_optional(tmp_path):
     assert _write_and_load(tmp_path, BASE_SIDECAR).levels == {}
 
@@ -443,13 +497,12 @@ def test_levels_rejects_bad_height(tmp_path):
 
 
 @pytest.mark.parametrize("key", ["below_void", "above_void"])
-@pytest.mark.parametrize("value, ids", [
-    ("[a, b]", "list"),
-    ("{name: crawl}", "mapping"),
-    ("''", "empty"),
-    ("'   '", "whitespace"),
-])
-def test_levels_rejects_a_void_that_is_not_a_space_name(tmp_path, key, value, ids):
+@pytest.mark.parametrize(
+    "value",
+    ["[a, b]", "{name: crawl}", "''", "'   '"],
+    ids=["list", "mapping", "empty", "whitespace"],
+)
+def test_levels_rejects_a_void_that_is_not_a_space_name(tmp_path, key, value):
     """A void names a SPACE, which `spaces:` and the built-in policies are keyed by. These
     were coerced with `str()`, so a list or a mapping was accepted as a name; the
     stringified result matches no policy, so it fell all the way through to the bare 0.5

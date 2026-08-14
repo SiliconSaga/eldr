@@ -68,6 +68,41 @@ VOID_FIXTURE = textwrap.dedent("""\
 """)
 
 
+# A house with NO ground-coupled surface: the lowest drawn level is an unconditioned
+# crawlspace, so the conditioned storey's below-face resolves to `buffer_floor` and the
+# crawl's own floor is outside the envelope. No `floor`, no `basement_wall` — and, unlike
+# a `below_void: crawlspace` side-car override, no void either, so a bullet that survives
+# here cannot be blamed on some other gate having fired.
+NO_GROUND_FIXTURE = textwrap.dedent("""\
+<?xml version='1.0'?>
+<home version='7400' name='t' wallHeight='300'>
+  <compass x='0' y='0' diameter='100' latitude='0.7105963' longitude='-1.2916551'/>
+  <level id='LC' name='Crawl' elevation='0.0' floorThickness='12.0' height='120' elevationIndex='0'/>
+  <level id='LM' name='Main' elevation='132.0' floorThickness='12.0' height='250' elevationIndex='1'/>
+  <wall id='c-n' level='LC' xStart='0' yStart='0' xEnd='1000' yEnd='0' height='120' thickness='10'/>
+  <wall id='c-s' level='LC' xStart='0' yStart='300' xEnd='1000' yEnd='300' height='120' thickness='10'/>
+  <wall id='c-w' level='LC' xStart='0' yStart='0' xEnd='0' yEnd='300' height='120' thickness='10'/>
+  <wall id='c-e' level='LC' xStart='1000' yStart='0' xEnd='1000' yEnd='300' height='120' thickness='10'/>
+  <wall id='m-n' level='LM' xStart='0' yStart='0' xEnd='1000' yEnd='0' height='250' thickness='10'/>
+  <wall id='m-s' level='LM' xStart='0' yStart='300' xEnd='1000' yEnd='300' height='250' thickness='10'/>
+  <wall id='m-w' level='LM' xStart='0' yStart='0' xEnd='0' yEnd='300' height='250' thickness='10'/>
+  <wall id='m-e' level='LM' xStart='1000' yStart='0' xEnd='1000' yEnd='300' height='250' thickness='10'/>
+  <room id='rc' level='LC' name='Crawlspace'>
+    <point x='0' y='0'/><point x='1000' y='0'/><point x='1000' y='300'/><point x='0' y='300'/>
+  </room>
+  <room id='rm' level='LM' name='Great Room'>
+    <point x='0' y='0'/><point x='1000' y='0'/><point x='1000' y='300'/><point x='0' y='300'/>
+  </room>
+</home>
+""")
+
+NO_GROUND_SIDECAR = SIDECAR + textwrap.dedent("""\
+levels:
+  Crawl:
+    role: unconditioned
+""")
+
+
 def _write(tmp_path, name, body):
     p = tmp_path / name
     p.write_text(body)
@@ -139,6 +174,34 @@ def test_overview_omits_the_void_caveat_when_the_model_has_no_gap(tmp_path):
     sc = _write(tmp_path, "sc.yaml", SIDECAR)
     md = overview.render_overview(home, sc)
     assert "drawn beneath" not in md
+
+
+def test_below_grade_caveat_appears_when_the_model_has_a_ground_coupled_surface(tmp_path):
+    """FIXTURE's single storey sits on grade, so its below-face is a `floor` — one of
+    `loads.GROUND_COUPLED_CATEGORIES`. Paired with the omission test below so the gate
+    cannot be satisfied by dropping the bullet outright, which would lose the disclosure
+    on every house that actually has a slab or a basement wall."""
+    home = _write(tmp_path, "Home.xml", FIXTURE)
+    sc = _write(tmp_path, "sc.yaml", SIDECAR)
+    md = overview.render_overview(home, sc)
+    assert "Below-grade resistance rides on the side-car" in md
+    assert "Below-grade resistance" in md.split("## What's demo-grade today")[1]
+
+
+def test_below_grade_caveat_is_omitted_when_no_surface_is_ground_coupled(tmp_path):
+    """This bullet was the one caveat in `_honesty` appended unconditionally. On a house
+    with neither a basement wall nor a slab it named `basement_wall` / `floor` anyway, and
+    a reader who goes looking for a surface the model does not contain learns to skim the
+    section — which costs the caveats that DO apply."""
+    home = _write(tmp_path, "Home.xml", NO_GROUND_FIXTURE)
+    sc = _write(tmp_path, "sc.yaml", NO_GROUND_SIDECAR)
+    md = overview.render_overview(home, sc)
+    assert "Below-grade resistance" not in md
+    assert "basement_wall" not in md
+    # the rest of the honesty section is still rendered, so the assertions above are about
+    # this bullet being gated and not about the whole section having gone missing
+    honesty = md.split("## What's demo-grade today")[1]
+    assert "Infiltration is an estimate" in honesty
 
 
 def _honesty(tmp_path, sidecar_body, fixture=VOID_FIXTURE):

@@ -32,6 +32,13 @@ VENTED_FACTOR = 1.0
 SOL_AIR_UPLIFT_F = 50.0
 DEFAULT_ROOF_ABSORPTANCE = 0.85
 
+# The one space name the summer resolver treats specially (see
+# `loads.effective_cooling_policy`, which re-exports this as `loads.ATTIC_SPACE`). It
+# lives HERE rather than in `loads` because `sidecar` also has to name it — to hold a
+# declared `spaces.attic.summer_temp_f` to the same hot-attic bound as
+# `cooling.attic_temp_f` — and `sidecar` cannot import `loads`, which imports `sidecar`.
+ATTIC_SPACE = "attic"
+
 
 def sol_air_attic_temp_f(outdoor_f: float, absorptance: float = DEFAULT_ROOF_ABSORPTANCE) -> float:
     """Estimated peak attic air temperature from roof solar gain."""

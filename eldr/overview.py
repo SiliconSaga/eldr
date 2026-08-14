@@ -79,10 +79,16 @@ def _honesty(a) -> str:
     if a.station is not None:
         bullets.append(f"**Design weather is nearest-station** ({a.station.name}), not the "
                        "certified ASHRAE station for the address.")
-    bullets.append("**Below-grade resistance rides on the side-car** — the soil path lives "
-                   "in the declared `basement_wall` / `floor` U-value, and Eldr applies one "
-                   "such value per category no matter how deep the surface sits or how much "
-                   "of a basement wall stands above grade.")
+    # Gated on the same intersection `report._open_questions_block` gates its below-grade
+    # notes on, and for the same reason: a caveat naming `basement_wall` / `floor` on a
+    # house with neither sends the reader hunting for a surface the model does not contain,
+    # and teaches them to skim the section. Every other bullet here is already gated on the
+    # thing it describes; this one was the sole unconditional exception.
+    if {s.category for s in a.env.surfaces} & loads.GROUND_COUPLED_CATEGORIES:
+        bullets.append("**Below-grade resistance rides on the side-car** — the soil path lives "
+                       "in the declared `basement_wall` / `floor` U-value, and Eldr applies one "
+                       "such value per category no matter how deep the surface sits or how much "
+                       "of a basement wall stands above grade.")
     if loads.BUFFER_WALL_CATEGORY in a.heating.by_category:
         bullets.append(f"**Buffer walls** use a flat {loads.BUFFER_FACTOR:.0%} of the design "
                        "ΔT (one factor for all buffers) and a whole-wall tag — no partial "

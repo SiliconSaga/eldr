@@ -211,7 +211,10 @@ def _heating_dt_for(design, declared_spaces) -> Callable[[geometry.Surface], flo
     return dt
 
 
-ATTIC_SPACE = "attic"
+# Re-exported, not re-declared: `sidecar` needs the same name for its hot-attic bound and
+# cannot import this module, so the value lives in `spaces`. Consumers keep using
+# `loads.ATTIC_SPACE`, which is where the substitution below reads as belonging.
+ATTIC_SPACE = spaces.ATTIC_SPACE
 
 
 def effective_cooling_policy(space: str, policy: spaces.SpacePolicy,

@@ -332,6 +332,23 @@ def _validate(sc: SideCar) -> None:
                            ("factor", p.factor)):
             if val is not None and not math.isfinite(val):
                 raise ValueError(f"spaces['{name}'].{label} must be a finite number")
+        # The attic's summer temperature is the SAME quantity as `cooling.attic_temp_f`
+        # arriving by a stronger route (an observation outranks the side-car's design
+        # figure), so it takes the same bound — which the other route has had all along
+        # and this one did not. Below the setpoint there is no negative-ΔT branch to fall
+        # into: `spaces._factor` clamps at 0, so the ceiling silently takes ZERO cooling
+        # load. Nothing raises and no number looks wrong; the gain is simply absent.
+        # ATTIC ONLY, deliberately. A crawlspace or garage at or below the setpoint is an
+        # ordinary observation — a cool crawl genuinely contributes no cooling load, and
+        # the 0 clamp is the right answer there. The attic is the exception because the
+        # whole reason to declare its summer temperature is that it runs HOTTER than the
+        # house; at or below the setpoint it is a typo, or Celsius, not a design input.
+        if (name == spaces_mod.ATTIC_SPACE and sc.cooling is not None
+                and p.summer_temp_f is not None and p.summer_temp_f <= sc.cooling.indoor_f):
+            raise ValueError(
+                f"spaces['{name}'].summer_temp_f ({p.summer_temp_f}) must exceed "
+                f"cooling.indoor_f ({sc.cooling.indoor_f}) — it is a hot-attic design "
+                f"temperature in °F")
         # A FRACTION of the design ΔT, so 1.0 (the space tracks outdoor air) is the cap.
         # The engine does not clamp the resolved factor above 1 — a sun-heated attic
         # genuinely runs hotter than outdoor air — but that number has to come from an
