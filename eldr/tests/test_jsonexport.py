@@ -72,6 +72,28 @@ def test_json_numbers_match_engine(tmp_path):
     assert data["heating"]["total_btuh"] == a.heating.total_btuh
 
 
+def test_json_cooling_carries_the_sensible_infiltration_term(tmp_path):
+    """The export is the machine-readable twin of the report, so the cooling block must
+    carry `infiltration_btuh` beside `sensible_btuh` exactly as the heating block already
+    carries it — otherwise a consumer can see the term in the rendered table and not in
+    the data, and the two renderings disagree about what the load is made of.
+
+    The value is checked against the physics (1.08 x CFM x the SUMMER ΔT of 15°F), not
+    just against the engine attribute: comparing the export to the engine would pass on
+    any number the engine happened to produce, including the winter ΔT's.
+    """
+    home, sc = _paths(tmp_path, SIDECAR + COOLING)
+    a = cli.analyze(home, sc)
+    data = jsonexport.analysis_to_dict(a)
+    infil_cfm = a.sc.infiltration_ach * a.env.volume_ft3 / 60.0
+    assert data["cooling"]["infiltration_btuh"] == pytest.approx(1.08 * infil_cfm * 15.0)
+    assert data["cooling"]["infiltration_btuh"] == a.cooling.infiltration_btuh
+    # and it is a real part of sensible, not a decorative extra
+    assert data["cooling"]["sensible_btuh"] > data["cooling"]["infiltration_btuh"] > 0
+    # the winter term is a different number and lives in its own block
+    assert data["heating"]["infiltration_btuh"] == pytest.approx(1.08 * infil_cfm * 55.0)
+
+
 def test_json_cooling_null_without_block(tmp_path):
     home, sc = _paths(tmp_path, SIDECAR)   # no cooling block
     data = jsonexport.analysis_to_dict(cli.analyze(home, sc))

@@ -119,6 +119,10 @@ def analysis_to_dict(a) -> dict:
             "occupants": c.occupants,
             "total_btuh": a.cooling.total_btuh,
             "sensible_btuh": a.cooling.sensible_btuh,
+            # A component of sensible_btuh, exported beside it exactly as the heating block
+            # exports its own infiltration term — the report itemises it, so the data must
+            # too, or the two renderings disagree about what the load is made of.
+            "infiltration_btuh": a.cooling.infiltration_btuh,
             "latent_btuh": a.cooling.latent_btuh,
             "cfm": a.cooling.cfm,
             "by_category": dict(a.cooling.by_category),

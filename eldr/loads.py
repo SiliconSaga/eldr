@@ -89,6 +89,13 @@ class HeatingResult:
 
 @dataclass(frozen=True)
 class CoolingResult:
+    # Sensible infiltration, listed before the aggregate exactly as `HeatingResult` lists
+    # `conduction_btuh` and `infiltration_btuh` before `total_btuh`: it is a COMPONENT of
+    # `sensible_btuh`, not an addition to it. It stays a named field rather than a
+    # `by_category` entry because `by_category` is the *surface* breakdown — every other
+    # key in it is a category with an area and a U-value, or a solar octant — and heating
+    # already draws the line in that same place.
+    infiltration_btuh: float
     sensible_btuh: float
     latent_btuh: float
     total_btuh: float
@@ -384,15 +391,23 @@ def cooling_load(env: geometry.Envelope, sc: sidecar.SideCar) -> CoolingResult:
     internal_sensible = c.occupants * INTERNAL_SENSIBLE_PER_OCCUPANT + APPLIANCE_SENSIBLE_BTUH
     by_category["internal"] = internal_sensible
 
-    sensible = conduction + solar + internal_sensible
-
+    # ONE infiltration airflow, feeding both halves of the load. Outdoor air arriving at
+    # the 1% design temperature into a cooler house brings sensible heat as well as
+    # moisture, and for a long time only the moisture reached this function: the sensible
+    # side was simply absent, which understated the cooling load, the SHR and — because
+    # design airflow is sized on sensible alone — every CFM downstream of it. `heating_load`
+    # has carried the identical term since the first cut; this is the same physics with
+    # the summer ΔT substituted for the winter one.
     infil_cfm = sc.infiltration_ach * env.volume_ft3 / 60.0
+    infiltration = units.SENSIBLE_FACTOR * infil_cfm * c.cooling_delta_t
+
+    sensible = conduction + solar + internal_sensible + infiltration
     latent = (c.occupants * INTERNAL_LATENT_PER_OCCUPANT
               + 0.68 * infil_cfm * LATENT_GRAINS_DIFF)
 
     total = sensible + latent
     cfm = sensible / (units.SENSIBLE_FACTOR * COOLING_SUPPLY_DT_F)
-    return CoolingResult(sensible, latent, total, cfm, by_category)
+    return CoolingResult(infiltration, sensible, latent, total, cfm, by_category)
 
 
 def per_room_loads(env: geometry.Envelope, sc: sidecar.SideCar) -> list[RoomLoad]:
@@ -425,7 +440,14 @@ def per_room_loads(env: geometry.Envelope, sc: sidecar.SideCar) -> list[RoomLoad
             solar = sum(area * cool.shgc * solar_hgf(b)
                         for b, area in r.windows_by_bearing.items())
             internal = internal_total * (r.area_ft2 / cond_area) if r.conditioned else 0.0
-            cooling = c_cond + solar + internal
+            # The room's OWN air, on the room's own volume, mirroring `h_infil` above —
+            # ungated on `conditioned` for the same reason the heating line is. This is the
+            # per-room half of the same missing term, and the one with teeth: cooling CFM
+            # is sized on this number, and duct diameters are sized on that CFM, so leaving
+            # it out sized ducts for an airflow the house never asks for.
+            c_infil = (units.SENSIBLE_FACTOR * (sc.infiltration_ach * r.volume_ft3 / 60.0)
+                       * cool.cooling_delta_t)
+            cooling = c_cond + solar + internal + c_infil
 
         cfm_heat = heating / (units.SENSIBLE_FACTOR * sc.design.supply_air_rise_f)
         cfm_cool = (cooling / (units.SENSIBLE_FACTOR * COOLING_SUPPLY_DT_F)

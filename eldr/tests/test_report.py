@@ -27,7 +27,10 @@ def _result():
 
 
 def _cooling():
-    return loads.CoolingResult(sensible_btuh=20000.0, latent_btuh=4000.0, total_btuh=24000.0,
+    # 3,742 is deliberately unlike every other figure this fixture renders, so a row
+    # showing it can only have come from `infiltration_btuh`.
+    return loads.CoolingResult(infiltration_btuh=3742.0,
+                               sensible_btuh=20000.0, latent_btuh=4000.0, total_btuh=24000.0,
                                cfm=900.0, by_category={"window": 500.0, "solar-W": 1200.0,
                                                        "internal": 1890.0})
 
@@ -718,6 +721,23 @@ def test_cooling_section_reports_the_sensible_heat_ratio():
     # lazy-continuation trap the void callout already fell into.
     assert lines[i - 1] == ""
     assert lines[i - 2].startswith("**Supply airflow:**")
+
+
+def test_cooling_table_itemises_infiltration_as_its_own_row():
+    """Sensible infiltration is a component of the cooling load, so it gets a row of its
+    own exactly as it does in the heating table — folding it into `sensible` with no line
+    to name it would leave a reader unable to see one of the four things they are paying
+    to cool, and unable to reconcile the itemised rows against the sensible total.
+
+    Scoped to the cooling section: the heating table renders a row spelled identically, so
+    an assertion against the whole document would pass on the heating one alone.
+    """
+    md = report.render_heating(_result(), _sc_cool(), cooling=_cooling())
+    cooling_md = md.split("## Eldr — Cooling Load")[1]
+    rows = [l for l in cooling_md.splitlines() if l.startswith("|")]
+    assert "| infiltration | 3,742 |" in rows
+    # its own row, above the summary rows — not merged into one of them
+    assert rows.index("| infiltration | 3,742 |") < rows.index("| **sensible** | **20,000** |")
 
 
 def test_cooling_section_explains_what_sensible_latent_and_total_are():

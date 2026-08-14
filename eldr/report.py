@@ -510,6 +510,11 @@ def _cooling_section(c: loads.CoolingResult, sc: sidecar.SideCar) -> list[str]:
     ]
     for cat, q in sorted(c.by_category.items()):
         lines.append(f"| {cat} | {q:,.0f} |")
+    # Its own row, in the same place the heating table puts it: after the surface
+    # categories, before the summary rows. Infiltration is not a surface, so it has no
+    # `by_category` key to sort in among them — and folding it into `sensible` would leave
+    # the itemised rows failing to add up to the total the note below claims they sum to.
+    lines.append(f"| infiltration | {c.infiltration_btuh:,.0f} |")
     lines += [
         f"| **sensible** | **{c.sensible_btuh:,.0f}** |",
         f"| latent | {c.latent_btuh:,.0f} |",

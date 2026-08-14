@@ -74,14 +74,57 @@ def test_cooling_load_math():
     conduction = 0.1 * 1000 * dt + 0.3 * 100 * dt         # 2000 + 600 = 2600
     solar = 100.0 * 0.4 * loads.solar_hgf(270)            # 100*0.4*75 = 3000
     internal = 2 * loads.INTERNAL_SENSIBLE_PER_OCCUPANT + loads.APPLIANCE_SENSIBLE_BTUH  # 460+1200=1660
-    sensible = conduction + solar + internal
-    assert abs(r.by_category["solar-W"] - solar) < 1e-6
-    assert abs(r.sensible_btuh - sensible) < 1e-6
     infil_cfm = 0.5 * 12000 / 60.0                        # 100 CFM
+    # Air arriving at 95°F into a 75°F house carries SENSIBLE heat as well as moisture.
+    # 2160 collides with none of the other terms here (2600 / 3000 / 1660), and the winter
+    # ΔT would have read 5400 — so the wrong ΔT cannot pass as the right one.
+    infiltration = 1.08 * infil_cfm * dt                  # 2160
+    sensible = conduction + solar + internal + infiltration
+    assert abs(r.by_category["solar-W"] - solar) < 1e-6
+    assert abs(r.infiltration_btuh - infiltration) < 1e-6
+    assert abs(r.sensible_btuh - sensible) < 1e-6
     latent = 2 * loads.INTERNAL_LATENT_PER_OCCUPANT + 0.68 * infil_cfm * loads.LATENT_GRAINS_DIFF
     assert abs(r.latent_btuh - latent) < 1e-6
     assert abs(r.total_btuh - (sensible + latent)) < 1e-6
     assert abs(r.cfm - sensible / (1.08 * loads.COOLING_SUPPLY_DT_F)) < 1e-6
+
+
+def _sc_infil_only():
+    """No assemblies, no glass, no occupants — infiltration and the flat appliance
+    baseline are the only cooling terms left.
+
+    The winter ΔT (55) and the summer ΔT (16) are deliberately far apart and neither is a
+    round multiple of the other, so a term computed against the wrong season cannot
+    coincidentally match.
+    """
+    return sidecar.SideCar(
+        assemblies={},
+        design=sidecar.DesignConditions(indoor_heating_f=70, outdoor_heating_99_f=15,
+                                        supply_air_rise_f=50),
+        infiltration_ach=0.6,
+        cooling=sidecar.Cooling(indoor_f=75, outdoor_1_f=91, shgc=0.35, occupants=0),
+    )
+
+
+def test_cooling_infiltration_is_sensible_and_rides_the_summer_delta_t():
+    """Infiltration used to reach the cooling load through its LATENT term only, so a house
+    whose only load is leakage came back with zero sensible and zero design airflow.
+
+    Every candidate wrong answer is a different number here: the latent term on the same
+    air is 1,836, the winter ΔT would give 5,346, the latent 0.68 factor on the summer ΔT
+    would give 979.2, and the appliance baseline sharing the load is a flat 1,200.
+    """
+    env = geometry.Envelope(surfaces=[], volume_ft3=9000.0)
+    r = loads.cooling_load(env, _sc_infil_only())
+    infil_cfm = 0.6 * 9000 / 60.0                          # 90 CFM
+    infiltration = 1.08 * infil_cfm * 16.0                 # 1555.2
+    assert abs(r.infiltration_btuh - infiltration) < 1e-6
+    # no surfaces and no glass, so sensible is the infiltration term plus the flat
+    # appliance baseline and nothing else — and infiltration is the LARGER of the two
+    assert abs(r.sensible_btuh - (infiltration + loads.APPLIANCE_SENSIBLE_BTUH)) < 1e-6
+    assert abs(r.latent_btuh - 0.68 * infil_cfm * loads.LATENT_GRAINS_DIFF) < 1e-6   # 1836
+    assert abs(r.total_btuh - (r.sensible_btuh + r.latent_btuh)) < 1e-6
+    assert abs(r.cfm - r.sensible_btuh / (1.08 * loads.COOLING_SUPPLY_DT_F)) < 1e-6
 
 
 def test_cooling_load_requires_cooling_block():
@@ -148,6 +191,27 @@ def test_per_room_interior_room_gets_infiltration_only():
     (rl,) = loads.per_room_loads(env, _sc())
     assert rl.heating_btuh > 0
     assert abs(rl.heating_btuh - 1.08 * (0.5 * 6000 / 60.0) * 50) < 1e-6
+
+
+def test_per_room_cooling_includes_infiltration_on_the_rooms_own_volume():
+    """The per-room cooling line had the same hole as the whole-house one, and it is the
+    worse of the two: per-room cooling sets the design CFM a Manual D duct is sized from,
+    so an understated cooling airflow ships as an undersized duct.
+
+    `Envelope.volume_ft3` is 0 while the room's own volume is 6,000 — an implementation
+    reaching for the whole-house volume returns 0 for this term and the test fails. The
+    three cooling terms (2,000 conduction / 1,660 internal / 1,080 infiltration) are
+    mutually distinct, as is the room's heating infiltration (2,700).
+    """
+    room = _room("Room", [geometry.Surface("exterior_wall", 1000.0)], 6000.0)
+    env = geometry.Envelope(surfaces=[], volume_ft3=0.0, rooms=[room])
+    (rl,) = loads.per_room_loads(env, _sc_cool())
+    cond = 0.1 * 1000 * 20.0                                     # 2000
+    internal = 2 * loads.INTERNAL_SENSIBLE_PER_OCCUPANT + loads.APPLIANCE_SENSIBLE_BTUH
+    infil = 1.08 * (0.5 * 6000 / 60.0) * 20.0                    # 1080
+    assert abs(rl.cooling_btuh - (cond + internal + infil)) < 1e-6
+    # Heating is the control: this change must not move it by a single BTU.
+    assert abs(rl.heating_btuh - (0.1 * 1000 * 50.0 + 1.08 * (0.5 * 6000 / 60.0) * 50.0)) < 1e-6
 
 
 def test_per_room_cfm_takes_larger_of_heat_cool():
