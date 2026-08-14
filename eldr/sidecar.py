@@ -225,10 +225,23 @@ def load_sidecar(path: str) -> SideCar:
         height_ft = _optional_number(spec, "height_ft", f"levels['{name}']")
         if height_ft is not None and (not math.isfinite(height_ft) or height_ft <= 0):
             raise ValueError(f"levels['{name}'].height_ft must be a finite number > 0")
+
+        def _void(key, _spec=spec, _name=name):
+            """A void name must BE a name. `str()` on whatever YAML produced accepted a
+            list or a mapping as one, and the stringified result matches no `spaces:` entry
+            and no built-in policy, so it fell through to the bare 0.5 buffer factor — a
+            load computed from a typo, with nothing said."""
+            v = _spec.get(key)
+            if v is None:
+                return None
+            if not isinstance(v, str) or not v.strip():
+                raise ValueError(f"levels['{_name}'].{key} must be a non-empty space name "
+                                 f"(got {v!r})")
+            return v
+
         level_specs[str(name)] = LevelSpec(
             role=role, height_ft=height_ft,
-            below_void=None if spec.get("below_void") is None else str(spec["below_void"]),
-            above_void=None if spec.get("above_void") is None else str(spec["above_void"]),
+            below_void=_void("below_void"), above_void=_void("above_void"),
         )
     sc = SideCar(
         assemblies={k: float(v) for k, v in _require(raw, "assemblies", "root").items()},
@@ -319,5 +332,13 @@ def _validate(sc: SideCar) -> None:
                            ("factor", p.factor)):
             if val is not None and not math.isfinite(val):
                 raise ValueError(f"spaces['{name}'].{label} must be a finite number")
-        if p.factor is not None and p.factor < 0:
-            raise ValueError(f"spaces['{name}'].factor must be >= 0")
+        # A FRACTION of the design ΔT, so 1.0 (the space tracks outdoor air) is the cap.
+        # The engine does not clamp the resolved factor above 1 — a sun-heated attic
+        # genuinely runs hotter than outdoor air — but that number has to come from an
+        # observed `summer_temp_f`, which says what the space IS. `factor: 2` is the
+        # shorthand claiming twice the outdoor ΔT with no temperature behind it, and it
+        # sails past unnoticed because a factor is a bare number with no unit to look wrong.
+        if p.factor is not None and not 0.0 <= p.factor <= 1.0:
+            raise ValueError(f"spaces['{name}'].factor must be between 0 and 1 — it is a "
+                             f"fraction of the design ΔT (got {p.factor!r}). A space hotter "
+                             f"than outdoor air is declared with summer_temp_f, not here.")

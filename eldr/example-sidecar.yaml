@@ -76,10 +76,13 @@ ducts:                        # optional — enables Manual D duct sizing
 #   Main:
 #     height_ft: 8.0            # override a storey height SH3D defaulted; the report echoes which
 #                               # levels used a model height and which used an override
-#     below_void: crawlspace    # what an UNDRAWN space beneath this level means (default crawlspace)
+#     below_void: crawlspace    # what an UNDRAWN space beneath this level means (default crawlspace).
+#                               # A plain space NAME, matched against `spaces:` and the built-ins.
 #     above_void: attic         # ...and above it (default attic)
 #   Overhang:
-#     below_void: outdoor       # open air beneath -> `exposed_floor` at the full outdoor ΔT
+#     below_void: outdoor       # open air beneath -> `exposed_floor` at the full outdoor ΔT. On the
+#                               # LOWEST conditioned level this also overrides the on-grade default,
+#                               # which is how a house on piers gets an exposed floor.
 #   Garage:
 #     role: unconditioned       # conditioned | unconditioned | ignore. NO `buffer` role — how a
 #                               # space is treated thermally is decided in `spaces:` below.
@@ -98,4 +101,6 @@ ducts:                        # optional — enables Manual D duct sizing
 #                               # Summer ignores this: see cooling.attic_temp_f / the sol-air estimate.
 #     # summer_temp_f: 125      # an observed attic air temp; outranks cooling.attic_temp_f
 #   garage:
-#     factor: 0.5               # explicit fraction of the design ΔT, if no temperature was observed
+#     factor: 0.5               # explicit fraction of the design ΔT, if no temperature was observed.
+#                               # 0-1 only: a space HOTTER than outdoor air is declared with
+#                               # summer_temp_f, which says what it is; above 1 here is rejected.

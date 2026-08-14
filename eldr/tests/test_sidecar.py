@@ -384,6 +384,26 @@ def test_spaces_rejects_bad_factor(tmp_path):
         _write_and_load(tmp_path, BASE_SIDECAR + "\n    spaces:\n      attic:\n        factor: -1\n")
 
 
+def test_spaces_rejects_a_factor_above_one(tmp_path):
+    """`factor` is documented as a FRACTION of the design ΔT, so 1.0 (the space tracks
+    outdoor air) is the ceiling. `factor: 2` applied twice the full ΔT and read as an
+    ordinary number on the way past. A space genuinely hotter than outdoor air — a sunlit
+    attic — is declared with `summer_temp_f`, which says what the space IS; the engine
+    still resolves factors above 1 from that route, and this does not touch it.
+    """
+    with pytest.raises(ValueError, match="between 0 and 1"):
+        _write_and_load(tmp_path, BASE_SIDECAR
+                        + "\n    spaces:\n      attic:\n        factor: 2\n")
+
+
+def test_spaces_accepts_a_factor_of_exactly_one(tmp_path):
+    """The bound is inclusive — `outdoor`'s own built-in policy is factor 1.0, so a
+    side-car must be able to say the same thing about any other space."""
+    sc = _write_and_load(tmp_path, BASE_SIDECAR
+                         + "\n    spaces:\n      attic:\n        factor: 1\n")
+    assert sc.spaces["attic"].factor == 1.0
+
+
 def test_spaces_rejects_non_boolean_vented(tmp_path):
     with pytest.raises(ValueError, match="vented"):
         _write_and_load(tmp_path, BASE_SIDECAR
@@ -420,3 +440,28 @@ def test_levels_rejects_bad_height(tmp_path):
     with pytest.raises(ValueError, match="height_ft"):
         _write_and_load(tmp_path, BASE_SIDECAR
                         + "\n    levels:\n      Main:\n        height_ft: 0\n")
+
+
+@pytest.mark.parametrize("key", ["below_void", "above_void"])
+@pytest.mark.parametrize("value, ids", [
+    ("[a, b]", "list"),
+    ("{name: crawl}", "mapping"),
+    ("''", "empty"),
+    ("'   '", "whitespace"),
+])
+def test_levels_rejects_a_void_that_is_not_a_space_name(tmp_path, key, value, ids):
+    """A void names a SPACE, which `spaces:` and the built-in policies are keyed by. These
+    were coerced with `str()`, so a list or a mapping was accepted as a name; the
+    stringified result matches no policy, so it fell all the way through to the bare 0.5
+    buffer factor and produced a load computed from a typo, saying nothing.
+    """
+    with pytest.raises(ValueError, match=f"{key} must be a non-empty space name"):
+        _write_and_load(tmp_path, BASE_SIDECAR
+                        + f"\n    levels:\n      Main:\n        {key}: {value}\n")
+
+
+def test_levels_accepts_an_ordinary_void_name(tmp_path):
+    """The other side of the guard: a plain string still parses, untouched."""
+    sc = _write_and_load(tmp_path, BASE_SIDECAR
+                         + "\n    levels:\n      Main:\n        above_void: vaulted\n")
+    assert sc.levels["Main"].above_void == "vaulted"
