@@ -36,8 +36,9 @@ _HOW_DETAILED = f"""## How detailed it gets
 - **The real footprint** — exterior walls follow the room-polygon outline, so a wall on
   an extension/wing is caught even off the bounding rectangle; unconditioned
   garage/crawlspace walls are excluded.
-- **Below-grade is ground-coupled** — basement walls + slab see ~50 °F soil, not design
-  air, so a partial basement stops dominating the load.
+- **Below-grade follows Manual J** — basement walls + slab carry the full outdoor design
+  ΔT for heating, with the soil path inside their effective U-value; in summer the soil is
+  a heat sink, so they add no cooling load.
 - **Buffer walls** — a wall to a garage/crawlspace is neither interior nor fully
   exterior; tagged `buffer`, it's loaded at **{loads.BUFFER_FACTOR:.0%} of the design
   ΔT**.
@@ -78,12 +79,62 @@ def _honesty(a) -> str:
     if a.station is not None:
         bullets.append(f"**Design weather is nearest-station** ({a.station.name}), not the "
                        "certified ASHRAE station for the address.")
-    bullets.append("**Below-grade coupling is coarse** — one ground temperature; it doesn't "
-                   "yet split a floor over the warm basement from one over a crawlspace.")
+    # Gated on the same intersection `report._open_questions_block` gates its below-grade
+    # notes on, and for the same reason: a caveat naming `basement_wall` / `floor` on a
+    # house with neither sends the reader hunting for a surface the model does not contain,
+    # and teaches them to skim the section. Every other bullet here is already gated on the
+    # thing it describes; this one was the sole unconditional exception.
+    if {s.category for s in a.env.surfaces} & loads.GROUND_COUPLED_CATEGORIES:
+        bullets.append("**Below-grade resistance rides on the side-car** — the soil path lives "
+                       "in the declared `basement_wall` / `floor` U-value, and Eldr applies one "
+                       "such value per category no matter how deep the surface sits or how much "
+                       "of a basement wall stands above grade.")
     if loads.BUFFER_WALL_CATEGORY in a.heating.by_category:
         bullets.append(f"**Buffer walls** use a flat {loads.BUFFER_FACTOR:.0%} of the design "
                        "ΔT (one factor for all buffers) and a whole-wall tag — no partial "
                        "height/length split yet.")
+    borrowed = sorted({s.category for s in a.env.surfaces
+                       if loads.assembly_borrow(s.category, a.sc.assemblies) is not None})
+    if borrowed:
+        # BOTH verbs agree, not just the first. The bullet has two of them ("has ... and
+        # stands in"), and inflecting only the leading one shipped "`buffer_floor` has no
+        # `assemblies` entry and stand in on ...". It survived because the report that was
+        # supposed to expose it pasted the corrected "stands in" instead of the output.
+        has, stands = ("has", "stands") if len(borrowed) == 1 else ("have", "stand")
+        bullets.append("**Some U-values are borrowed, not declared** — "
+                       + ", ".join(f"`{c}`" for c in borrowed)
+                       + f" {has} no `assemblies` entry and {stands} in on a related "
+                       "assembly's number; the *Borrowed assembly U-values* table above "
+                       "names each donor and how far off it can be.")
+    if a.env.level_heights_ft:
+        bullets.append("**Storey heights are whatever the model says** — Sweet Home 3D gives "
+                       "each level a default height, and a level nobody re-measured looks "
+                       "identical to one that was; the *Level heights* table above shows what "
+                       "each level used and what volume it contributed.")
+    if any(s.space is not None for s in a.env.surfaces):
+        bullets.append("**Buffer-space temperatures are policy, not measurement** — an attic "
+                       "with no observed summer temperature gets a sol-air estimate (outdoor "
+                       "air plus a flat solar uplift, no roof geometry or ventilation rate); "
+                       "the *Buffer spaces* table above prints the factor and temperature "
+                       "each surface actually got.")
+    if a.env.voids:
+        # The category in code font, matching the borrow bullet above it, so a reader can
+        # see the two caveats are about the same floor rather than two floors — and read
+        # off the VOIDS via the shared helper, never named here. An `or "buffer floor"`
+        # fallback lived on this line and was exactly the defect the helper exists to
+        # remove: `below_void: ground` resolves the void to a ground-coupled `floor`,
+        # which the helper reports as "no category I can name", and the fallback then
+        # confidently said "buffer floor" — wrong category AND wrong ΔT, the same
+        # sounds-careful-while-understating shape. When there is nothing to name, the
+        # clause vanishes; the gap itself is still reported.
+        categories = report.void_categories(a.env)
+        as_what = (" — modeled as " + ", ".join(f"`{c}`" for c in categories)
+                   + " over undrawn space") if categories else ""
+        total = sum(v.area_ft2 for v in a.env.voids.values())
+        bullets.append(f"**{total:,.1f} ft² of conditioned floor has no "
+                       f"level drawn beneath it**{as_what}. That is a gap in the drawing, "
+                       "not a measurement; draw those spaces and the assumption is "
+                       "replaced by geometry.")
     if a.duct_plan is not None and a.duct_plan.unit is None:
         bullets.append("**No air handler placed** — duct runs have no lengths and the "
                        "friction rate isn't derived; place one named per `ducts.unit_name`.")
@@ -100,7 +151,8 @@ def render_overview(home_path: str, sidecar_path: str) -> str:
     from eldr import cli   # lazy: cli imports overview only inside main()
     a = cli.analyze(home_path, sidecar_path)
     body = report.render_heating(a.heating, a.sc, sizing=a.sizing, cooling=a.cooling,
-                                 station=a.station, ducts=a.ducts, duct_plan=a.duct_plan)
+                                 station=a.station, ducts=a.ducts, duct_plan=a.duct_plan,
+                                 env=a.env)
     # Demote the report's leading H1 so the whole overview nests under one title; its
     # other sections are already ## and sit consistently beneath it. Match the first
     # H1 line by shape (not exact text), so a future report-title tweak can't slip a

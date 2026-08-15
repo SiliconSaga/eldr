@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import math
 import yaml
-from eldr import ductd
+from eldr import ductd, spaces as spaces_mod
 
 # Deep soil temperature (°F) a below-grade surface is coupled to when the side-car
 # doesn't specify one. Roughly the annual-mean air temp for a temperate US climate.
@@ -13,13 +13,31 @@ DEFAULT_GROUND_TEMP_F = 50.0
 # `buffer` (garage/crawl-adjacent) can only come from a tag — geometry can't infer it.
 WALL_BOUNDARIES = frozenset({"exterior", "ground", "buffer", "interior"})
 
+# Roles a level may be assigned. Deliberately NO `buffer`: buffer-ness belongs to a
+# space's temperature policy (see spaces.py), not to a level. An unconditioned level
+# simply becomes a named space; how it is treated thermally is decided in `spaces:`.
+LEVEL_ROLES = frozenset({"conditioned", "unconditioned", "ignore"})
+
+
+@dataclass(frozen=True)
+class LevelSpec:
+    role: str | None = None
+    height_ft: float | None = None
+    below_void: str | None = None
+    above_void: str | None = None
+
 
 @dataclass(frozen=True)
 class DesignConditions:
     indoor_heating_f: float
     outdoor_heating_99_f: float | None   # None -> resolved from lat/long (see climate)
     supply_air_rise_f: float
-    ground_temp_f: float = DEFAULT_GROUND_TEMP_F   # deep-soil temp for below-grade surfaces
+    # Deep-soil temp. COOLING ONLY: it decides whether the soil is a heat source in summer
+    # (almost never — see loads.GROUND_COUPLED_CATEGORIES). Heating does NOT read it, and
+    # there is deliberately no `ground_heating_delta_t` counterpart: a below-grade
+    # assembly U is already an effective value containing the soil path, so discounting
+    # the winter ΔT for soil as well would count the same resistance twice.
+    ground_temp_f: float = DEFAULT_GROUND_TEMP_F
 
     @property
     def heating_delta_t(self) -> float:
@@ -28,15 +46,6 @@ class DesignConditions:
                              "or provide the model's lat/long for a climate lookup")
         return self.indoor_heating_f - self.outdoor_heating_99_f
 
-    @property
-    def ground_heating_delta_t(self) -> float:
-        """Heating ΔT for below-grade surfaces — coupled to soil, not outdoor air.
-
-        Clamped at 0: if the soil is warmer than the indoor setpoint the surface
-        gains heat rather than losing it, which a heating load shouldn't count.
-        """
-        return max(0.0, self.indoor_heating_f - self.ground_temp_f)
-
 
 @dataclass(frozen=True)
 class Cooling:
@@ -44,6 +53,10 @@ class Cooling:
     outdoor_1_f: float | None   # 1% cooling design temp; None -> resolved from lat/long
     shgc: float                 # window solar heat gain coefficient (0..1)
     occupants: float            # for internal + latent gains
+    # Design-day attic air temperature. None -> loads.py estimates it from the outdoor
+    # design temp (spaces.sol_air_attic_temp_f). Outranked by an observed
+    # `spaces.attic.summer_temp_f`; overrides the estimate everywhere else.
+    attic_temp_f: float | None = None
 
     @property
     def cooling_delta_t(self) -> float:
@@ -79,6 +92,10 @@ class SideCar:
     # explicit per-wall boundary overrides: SH3D wall id -> one of WALL_BOUNDARIES.
     # Untagged walls fall back to geometric inference.
     wall_boundaries: dict[str, str] = field(default_factory=dict)
+    # buffer-space temperature policies, keyed by space name (attic / crawlspace / ...)
+    spaces: dict[str, spaces_mod.SpacePolicy] = field(default_factory=dict)
+    # per-level overrides keyed by the level's SH3D *name* (role / height / void naming)
+    levels: dict[str, LevelSpec] = field(default_factory=dict)
 
 
 def _require(d: dict, key: str, ctx: str):
@@ -128,6 +145,7 @@ def load_sidecar(path: str) -> SideCar:
             outdoor_1_f=_optional_number(cooling_raw, "outdoor_1_f", "cooling"),
             shgc=_require_number(cooling_raw, "shgc", "cooling"),
             occupants=_require_number(cooling_raw, "occupants", "cooling"),
+            attic_temp_f=_optional_number(cooling_raw, "attic_temp_f", "cooling"),
         )
     ducts_raw = raw.get("ducts")
     if ducts_raw is not None and not isinstance(ducts_raw, dict):
@@ -174,6 +192,57 @@ def load_sidecar(path: str) -> SideCar:
                 raise ValueError(f"walls['{wid}'].boundary must be one of "
                                  f"{sorted(WALL_BOUNDARIES)} (got {boundary!r})")
             wall_boundaries[str(wid)] = boundary
+    spaces_raw = raw.get("spaces")
+    if spaces_raw is not None and not isinstance(spaces_raw, dict):
+        raise ValueError("spaces must be a mapping of space-name -> policy")
+    space_policies: dict[str, spaces_mod.SpacePolicy] = {}
+    for name, spec in (spaces_raw or {}).items():
+        if not isinstance(spec, dict):
+            raise ValueError(f"spaces['{name}'] must be a mapping "
+                             f"(winter_temp_f / summer_temp_f / factor / vented)")
+        vented = spec.get("vented")
+        if vented is not None and not isinstance(vented, bool):
+            raise ValueError(f"spaces['{name}'].vented must be true or false")
+        space_policies[str(name)] = spaces_mod.SpacePolicy(
+            name=str(name),
+            winter_temp_f=_optional_number(spec, "winter_temp_f", f"spaces['{name}']"),
+            summer_temp_f=_optional_number(spec, "summer_temp_f", f"spaces['{name}']"),
+            factor=_optional_number(spec, "factor", f"spaces['{name}']"),
+            vented=vented,
+        )
+    levels_raw = raw.get("levels")
+    if levels_raw is not None and not isinstance(levels_raw, dict):
+        raise ValueError("levels must be a mapping of level-name -> spec")
+    level_specs: dict[str, LevelSpec] = {}
+    for name, spec in (levels_raw or {}).items():
+        if not isinstance(spec, dict):
+            raise ValueError(f"levels['{name}'] must be a mapping "
+                             f"(role / height_ft / below_void / above_void)")
+        role = spec.get("role")
+        if role is not None and (not isinstance(role, str) or role not in LEVEL_ROLES):
+            raise ValueError(f"levels['{name}'].role must be one of {sorted(LEVEL_ROLES)} "
+                             f"(got {role!r})")
+        height_ft = _optional_number(spec, "height_ft", f"levels['{name}']")
+        if height_ft is not None and (not math.isfinite(height_ft) or height_ft <= 0):
+            raise ValueError(f"levels['{name}'].height_ft must be a finite number > 0")
+
+        def _void(key, _spec=spec, _name=name):
+            """A void name must BE a name. `str()` on whatever YAML produced accepted a
+            list or a mapping as one, and the stringified result matches no `spaces:` entry
+            and no built-in policy, so it fell through to the bare 0.5 buffer factor — a
+            load computed from a typo, with nothing said."""
+            v = _spec.get(key)
+            if v is None:
+                return None
+            if not isinstance(v, str) or not v.strip():
+                raise ValueError(f"levels['{_name}'].{key} must be a non-empty space name "
+                                 f"(got {v!r})")
+            return v
+
+        level_specs[str(name)] = LevelSpec(
+            role=role, height_ft=height_ft,
+            below_void=_void("below_void"), above_void=_void("above_void"),
+        )
     sc = SideCar(
         assemblies={k: float(v) for k, v in _require(raw, "assemblies", "root").items()},
         design=DesignConditions(
@@ -188,6 +257,8 @@ def load_sidecar(path: str) -> SideCar:
         cooling=cooling,
         ducts=ducts,
         wall_boundaries=wall_boundaries,
+        spaces=space_policies,
+        levels=level_specs,
     )
     _validate(sc)
     return sc
@@ -234,6 +305,17 @@ def _validate(sc: SideCar) -> None:
             raise ValueError("cooling.shgc must be between 0 and 1")
         if c.occupants < 0:
             raise ValueError("cooling.occupants must be >= 0")
+        if c.attic_temp_f is not None:
+            # Checked separately from `cnum` so the message can say what the bound means:
+            # the whole point of the override is an attic HOTTER than the house, and an
+            # attic at or below the setpoint is a typo (or Celsius), not a design input.
+            if not math.isfinite(c.attic_temp_f):
+                raise ValueError(
+                    f"cooling.attic_temp_f must be a finite number (got {c.attic_temp_f!r})")
+            if c.attic_temp_f <= c.indoor_f:
+                raise ValueError(
+                    f"cooling.attic_temp_f ({c.attic_temp_f}) must exceed cooling.indoor_f "
+                    f"({c.indoor_f}) — it is a hot-attic design temperature in °F")
     if sc.ducts is not None:
         if not math.isfinite(sc.ducts.friction_rate) or sc.ducts.friction_rate <= 0:
             raise ValueError("ducts.friction_rate must be finite and > 0")
@@ -245,3 +327,35 @@ def _validate(sc: SideCar) -> None:
         for run in sc.ducts.runs:
             if not math.isfinite(run.cfm) or run.cfm <= 0:
                 raise ValueError(f"ducts.run '{run.name}': cfm must be finite and > 0")
+    for name, p in sc.spaces.items():
+        for label, val in (("winter_temp_f", p.winter_temp_f), ("summer_temp_f", p.summer_temp_f),
+                           ("factor", p.factor)):
+            if val is not None and not math.isfinite(val):
+                raise ValueError(f"spaces['{name}'].{label} must be a finite number")
+        # The attic's summer temperature is the SAME quantity as `cooling.attic_temp_f`
+        # arriving by a stronger route (an observation outranks the side-car's design
+        # figure), so it takes the same bound — which the other route has had all along
+        # and this one did not. Below the setpoint there is no negative-ΔT branch to fall
+        # into: `spaces._factor` clamps at 0, so the ceiling silently takes ZERO cooling
+        # load. Nothing raises and no number looks wrong; the gain is simply absent.
+        # ATTIC ONLY, deliberately. A crawlspace or garage at or below the setpoint is an
+        # ordinary observation — a cool crawl genuinely contributes no cooling load, and
+        # the 0 clamp is the right answer there. The attic is the exception because the
+        # whole reason to declare its summer temperature is that it runs HOTTER than the
+        # house; at or below the setpoint it is a typo, or Celsius, not a design input.
+        if (name == spaces_mod.ATTIC_SPACE and sc.cooling is not None
+                and p.summer_temp_f is not None and p.summer_temp_f <= sc.cooling.indoor_f):
+            raise ValueError(
+                f"spaces['{name}'].summer_temp_f ({p.summer_temp_f}) must exceed "
+                f"cooling.indoor_f ({sc.cooling.indoor_f}) — it is a hot-attic design "
+                f"temperature in °F")
+        # A FRACTION of the design ΔT, so 1.0 (the space tracks outdoor air) is the cap.
+        # The engine does not clamp the resolved factor above 1 — a sun-heated attic
+        # genuinely runs hotter than outdoor air — but that number has to come from an
+        # observed `summer_temp_f`, which says what the space IS. `factor: 2` is the
+        # shorthand claiming twice the outdoor ΔT with no temperature behind it, and it
+        # sails past unnoticed because a factor is a bare number with no unit to look wrong.
+        if p.factor is not None and not 0.0 <= p.factor <= 1.0:
+            raise ValueError(f"spaces['{name}'].factor must be between 0 and 1 — it is a "
+                             f"fraction of the design ΔT (got {p.factor!r}). A space hotter "
+                             f"than outdoor air is declared with summer_temp_f, not here.")

@@ -7,7 +7,33 @@ exact values rather than letting a model guess them.
 """
 from __future__ import annotations
 import json
-from eldr import loads, sizing as sizing_mod
+from eldr import loads, sizing as sizing_mod, spaces as spaces_mod
+
+
+def _space_factors(a) -> dict:
+    """Every buffer space a surface faces, with the ΔT fractions the engine applied.
+
+    `cooling_factor` comes from `loads.applied_cooling_factor`, NOT from
+    `spaces.policy_for` + `spaces.cooling_factor`. The attic's summer temperature is
+    substituted at load time, so the *declared* policy is not the applied one: on Refrhus
+    the declaration exports 0.50 while the engine loaded the ceiling at 3.66.
+    `heating_factor` genuinely is the declared policy's — only summer is substituted —
+    which is exactly why the asymmetry is easy to miss.
+
+    A side-car with no `cooling` block has no summer to resolve, so `cooling_factor` is
+    null rather than a fabricated number.
+    """
+    sc, d = a.sc, a.sc.design
+    indoor_w = d.indoor_heating_f
+    outdoor_w = indoor_w - d.heating_delta_t
+    return {
+        name: {
+            "heating_factor": spaces_mod.heating_factor(
+                spaces_mod.policy_for(name, sc.spaces), indoor_w, outdoor_w),
+            "cooling_factor": loads.applied_cooling_factor(name, sc),
+        }
+        for name in sorted({s.space for s in a.env.surfaces if s.space is not None})
+    }
 
 
 def analysis_to_dict(a) -> dict:
@@ -61,6 +87,25 @@ def analysis_to_dict(a) -> dict:
             }
             for r in room_loads
         ],
+        # The level stack, as data. `levels` is keyed by the level's SH3D *name* exactly
+        # as `Envelope.level_heights_ft` is, so two levels sharing a name collide into one
+        # entry. That is a load-time error ONLY when the side-car has a `levels:` block
+        # (an entry could not address one of them unambiguously); with no `levels:` block
+        # the collision is silent and reaches this map. See the README's known limitations.
+        "levels": {name: {"height_ft": h} for name, h in a.env.level_heights_ft.items()},
+        "spaces": _space_factors(a),
+        # Present even when empty, so a consumer can tell "no gaps" from "old export".
+        # `category` is the surface category THAT gap resolved to, carried from the
+        # resolver rather than re-derived from the envelope; it is null only when rooms
+        # sharing a name resolved to different categories (see `geometry.Void`).
+        "voids": {name: {"area_ft2": v.area_ft2, "category": v.category}
+                  for name, v in a.env.voids.items()},
+        # New in this cut: the whole-house horizontal split becomes inspectable without
+        # re-deriving it. `space` is null for anything not facing a buffer space.
+        "surfaces": [
+            {"category": s.category, "area_ft2": s.area_ft2, "space": s.space}
+            for s in a.env.surfaces
+        ],
         "ducts": None,
     }
 
@@ -74,6 +119,10 @@ def analysis_to_dict(a) -> dict:
             "occupants": c.occupants,
             "total_btuh": a.cooling.total_btuh,
             "sensible_btuh": a.cooling.sensible_btuh,
+            # A component of sensible_btuh, exported beside it exactly as the heating block
+            # exports its own infiltration term — the report itemises it, so the data must
+            # too, or the two renderings disagree about what the load is made of.
+            "infiltration_btuh": a.cooling.infiltration_btuh,
             "latent_btuh": a.cooling.latent_btuh,
             "cfm": a.cooling.cfm,
             "by_category": dict(a.cooling.by_category),

@@ -131,6 +131,114 @@ def test_wall_tag_flows_through_to_report(tmp_path):
     assert "buffer_wall" in md
 
 
+# A conditioned storey sitting over an unconditioned garage: the resolver gives its
+# rooms a `buffer_floor`, a category no side-car in this repo declares an assembly for.
+FIXTURE_OVER_GARAGE = textwrap.dedent("""\
+<?xml version='1.0'?>
+<home version='7400' name='t' wallHeight='300'>
+  <level id='LG' name='Garage' elevation='0.0' floorThickness='12.0' height='300' elevationIndex='0'/>
+  <level id='L1' name='Main' elevation='300.0' floorThickness='12.0' height='300' elevationIndex='1'/>
+  <wall id='g-n' level='LG' xStart='0' yStart='0' xEnd='500' yEnd='0' height='300' thickness='10'/>
+  <wall id='g-s' level='LG' xStart='0' yStart='500' xEnd='500' yEnd='500' height='300' thickness='10'/>
+  <wall id='g-w' level='LG' xStart='0' yStart='0' xEnd='0' yEnd='500' height='300' thickness='10'/>
+  <wall id='g-e' level='LG' xStart='500' yStart='0' xEnd='500' yEnd='500' height='300' thickness='10'/>
+  <wall id='m-n' level='L1' xStart='0' yStart='0' xEnd='500' yEnd='0' height='300' thickness='10'/>
+  <wall id='m-s' level='L1' xStart='0' yStart='500' xEnd='500' yEnd='500' height='300' thickness='10'/>
+  <wall id='m-w' level='L1' xStart='0' yStart='0' xEnd='0' yEnd='500' height='300' thickness='10'/>
+  <wall id='m-e' level='L1' xStart='500' yStart='0' xEnd='500' yEnd='500' height='300' thickness='10'/>
+  <room id='r-gar' level='LG' name='Gar'>
+    <point x='0' y='0'/><point x='500' y='0'/><point x='500' y='500'/><point x='0' y='500'/>
+  </room>
+  <room id='r-main' level='L1' name='Living'>
+    <point x='0' y='0'/><point x='500' y='0'/><point x='500' y='500'/><point x='0' y='500'/>
+  </room>
+</home>
+""")
+
+
+def test_buffer_floor_without_an_assembly_borrows_the_floor_u(tmp_path):
+    """The flipped marker: this model used to raise, and must now produce a load.
+
+    `SIDECAR` declares no `buffer_floor` and no `exposed_floor`, so the U-value walks
+    the fallback chain `buffer_floor -> exposed_floor -> floor` and lands on `floor`
+    (0.05). The ΔT is the garage's, not outdoor air's: no `spaces:` block is declared,
+    so `garage` takes its built-in unvented default of half the design ΔT.
+    """
+    from eldr import geometry, loads, sidecar as sidecar_mod, spaces
+    home = tmp_path / "Home.xml"
+    home.write_text(FIXTURE_OVER_GARAGE)
+    sc = tmp_path / "sc.yaml"
+    sc.write_text(SIDECAR)                       # declares exterior_wall/window/ceiling/floor
+    md = cli.run(str(home), str(sc))             # the path that raised before Task 6
+    assert "buffer_floor" in md
+
+    parsed = sidecar_mod.load_sidecar(str(sc))
+    env = geometry.extract_envelope(str(home), parsed.wall_boundaries, parsed.levels)
+    area = sum(s.area_ft2 for s in env.surfaces if s.category == "buffer_floor")
+    r = loads.heating_load(env, parsed)
+    expected = 0.05 * area * parsed.design.heating_delta_t * spaces.UNVENTED_FACTOR
+    assert abs(r.by_category["buffer_floor"] - expected) < 1e-6
+
+
+def test_buffer_floor_is_actually_what_that_model_produces(tmp_path):
+    """Pins the precondition the test above depends on but cannot itself check.
+
+    That test's expected ΔT is the *garage's* unvented default, which only holds because
+    these surfaces carry `space == "garage"`. If the resolver kept emitting `buffer_floor`
+    but attributed it to a different space — or to none — the expectation there would
+    silently start describing the wrong physics. This keeps the attribution honest."""
+    from eldr import geometry
+    home = tmp_path / "Home.xml"
+    home.write_text(FIXTURE_OVER_GARAGE)
+    env = geometry.extract_envelope(str(home))
+    buffer_floors = [s for s in env.surfaces if s.category == "buffer_floor"]
+    assert buffer_floors and all(s.space == "garage" for s in buffer_floors)
+
+
+def test_below_void_outdoor_reaches_exposed_floor_and_the_report_says_so(tmp_path):
+    """The only documented route to `exposed_floor`, driven end to end.
+
+    Two things at once, because neither is worth much alone. First that the route is
+    real: `levels.Main.below_void: outdoor` makes the undrawn area an `exposed_floor`
+    facing the `outdoor` space, whose built-in policy is factor 1.0 — the FULL design ΔT,
+    not a buffer's half. That is what makes the second half matter: the report's void
+    warning used to name `buffer_floor` unconditionally, so on this path it described a
+    surface the envelope does not contain, at half the ΔT the engine actually applied.
+
+    Without this test the report-level tests would be checking a hand-built Envelope
+    against a hand-built expectation, with nothing to say the resolver produces that
+    shape at all.
+    """
+    from eldr import geometry, loads, sidecar as sidecar_mod, report
+    from eldr.tests.fixtures import VOID_BELOW_FIXTURE
+    home = tmp_path / "Home.xml"
+    home.write_text(VOID_BELOW_FIXTURE)
+    sc = tmp_path / "sc.yaml"
+    sc.write_text(SIDECAR + "  basement_wall: 0.20\nlevels:\n  Main:\n"
+                            "    below_void: outdoor\n")
+    parsed = sidecar_mod.load_sidecar(str(sc))
+    env = geometry.extract_envelope(str(home), parsed.wall_boundaries, parsed.levels)
+
+    exposed = [s for s in env.surfaces if s.category == "exposed_floor"]
+    assert exposed and all(s.space == "outdoor" for s in exposed)
+    assert not any(s.category == "buffer_floor" for s in env.surfaces)
+    assert env.voids                                  # still reported as a schematic gap
+
+    # the full ΔT, not a buffer fraction — the claim the old warning contradicted.
+    # `match=` pins WHICH warning: a bare `pytest.warns(UserWarning)` is satisfied by any
+    # warning at all, including the unrelated scaffolding and unknown-level-name ones this
+    # module can raise, so it would keep passing if the borrow stopped announcing itself.
+    with pytest.warns(UserWarning, match=r"no `assemblies\.exposed_floor` in the side-car"):
+        r = loads.heating_load(env, parsed)
+    area = sum(s.area_ft2 for s in exposed)
+    assert abs(r.by_category["exposed_floor"]
+               - 0.05 * area * parsed.design.heating_delta_t) < 1e-6
+
+    md = report.render_heating(r, parsed, env=env)   # rendering resolves no U-values
+    warning = next(l for l in md.splitlines() if l.startswith("⚠ **"))
+    assert "`exposed_floor`" in warning and "buffer_floor" not in warning
+
+
 def test_cli_walls_and_overview_mutually_exclusive():
     with pytest.raises(SystemExit):
         cli.main(["home.xml", "--walls", "--overview"])

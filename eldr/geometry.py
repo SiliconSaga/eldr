@@ -12,7 +12,7 @@ import warnings
 import zipfile
 from xml.etree.ElementTree import Element
 import defusedxml.ElementTree as DET
-from eldr import units
+from eldr import stack, units
 
 # Cap the parsed Home.xml — a .sh3d/Home.xml can be third-party input, so bound it
 # (with defusedxml) against zip-bomb / billion-laughs style attacks.
@@ -59,6 +59,10 @@ def _read_home_root(path: str) -> Element:
 class Surface:
     category: str
     area_ft2: float
+    # Which buffer space this surface faces, when it faces one. A category alone can't
+    # set ΔT once policies are per-space: a buffer_floor over the crawl and one over the
+    # garage share a category but not a temperature.
+    space: str | None = None
 
 
 @dataclass(frozen=True)
@@ -84,6 +88,35 @@ class Room:
 
 
 @dataclass(frozen=True)
+class Void:
+    """Conditioned floor with nothing drawn beneath it, and what the resolver made of it.
+
+    Carrying `category` here is the whole point of the record. It used to be absent, and
+    every consumer re-derived it by asking "which void categories does this ENVELOPE
+    contain anywhere" — a different question with a different answer. A `below_void:
+    ground` gap on a house that also has a drawn crawlspace came back as `buffer_floor`
+    (wrong category, wrong ΔT, stated confidently), and an `outdoor` gap beside a drawn
+    crawlspace came back as both categories at once with a cross-reference that could not
+    be arithmetically true of either.
+
+    `category` is None ONLY when rooms SHARING A NAME resolved to different categories and
+    were merged for display. No single category describes that entry, so callers must make
+    no treatment claim about it — the same "say nothing rather than guess" rule the report
+    follows everywhere else.
+    """
+    area_ft2: float
+    category: str | None
+
+
+def _merge_void(prev: Void | None, area_ft2: float, category: str) -> Void:
+    """Fold one room's gap into the by-room-name void map (see `Void.category`)."""
+    if prev is None:
+        return Void(area_ft2, category)
+    return Void(prev.area_ft2 + area_ft2,
+                prev.category if prev.category == category else None)
+
+
+@dataclass(frozen=True)
 class Envelope:
     surfaces: list[Surface]
     volume_ft3: float
@@ -100,6 +133,19 @@ class Envelope:
     # placed furniture (to locate an air-handler unit) and per-level base elevation (cm).
     furniture: list[Furniture] = field(default_factory=list)
     level_elevations: dict[str, float] = field(default_factory=dict)
+    # room name -> the floor gap with nothing drawn beneath it (area + the category it
+    # resolved to), after the misalignment tolerance. Surfaced as a schematic-gap warning,
+    # never silently.
+    voids: dict[str, Void] = field(default_factory=dict)
+    # level name -> the height (ft) actually used, so a wrong SH3D default is visible.
+    level_heights_ft: dict[str, float] = field(default_factory=dict)
+    # level name -> the conditioned volume (ft^3) THAT level put into `volume_ft3`, keyed
+    # exactly as `level_heights_ft`. Attributed here rather than re-derived downstream:
+    # the report echoes it beside the height, and a second implementation of the rule
+    # ("conditioned room area x storey height, unless the level is scaffolding, unless the
+    # model is roomless...") is a drift waiting to happen. A level holding no conditioned
+    # rooms contributes 0.0 and says so.
+    level_volumes_ft3: dict[str, float] = field(default_factory=dict)
 
 
 def _f(el, attr):
@@ -179,6 +225,12 @@ def _point_in_polygon(px, py, points):
 # How far (cm) past a wall face to probe for a room on that side, when classifying a
 # wall as envelope vs partition — clears the wall's half-thickness plus a margin.
 _SIDE_PROBE_MARGIN_CM = 15.0
+
+# Footprint (ft^2) below which a roomless level's walls are too slight to be worth
+# warning about — a lone wall spans zero area, a short L a fraction of a foot. This is
+# a noise floor, NOT an attempt to tell a duct chase from a storey; anything with a real
+# footprint warns, because that judgement belongs to the modeler.
+_SCAFFOLD_WARN_FT2 = 10.0
 
 
 def _conditioned_room_on_sides(w, rooms):
@@ -290,12 +342,23 @@ def _unconditioned_level(name):
     return n.startswith("garage") or n.startswith("crawlspace")
 
 
-def _parse_rooms(root, levels):
+def _level_conditioned(level_name, spec):
+    """Side-car role first, then the name heuristic it replaces."""
+    if spec is not None and spec.role is not None:
+        return spec.role == "conditioned"
+    return not _unconditioned_level(level_name)
+
+
+def _parse_rooms(root, levels_xml, level_specs=None):
     """Parse <room> polygons into raw room records grouped by level.
 
     Returns {level_id: [ {id, name, level_id, points, area_ft2, centroid_cm,
     conditioned}, ... ]}. Rooms with fewer than 3 points are skipped (degenerate).
+
+    `level_specs` are side-car `levels:` entries keyed by level NAME; a spec's `role`
+    overrides the garage/crawlspace name heuristic for that level's rooms.
     """
+    level_specs = level_specs or {}
     by_level: dict[str, list] = {}
     for r in root.findall("room"):
         pts = [(_f(p, "x"), _f(p, "y")) for p in r.findall("point")]
@@ -305,7 +368,8 @@ def _parse_rooms(root, levels):
         area_cm2, centroid = _polygon_area_centroid(pts)
         if area_cm2 <= 0.0:                    # collinear / repeated points -> degenerate
             continue
-        lv = levels.get(lid)
+        lv = levels_xml.get(lid)
+        lname = lv.get("name") if lv is not None else None
         by_level.setdefault(lid, []).append({
             "id": r.get("id"),
             "name": r.get("name") or "(unnamed)",
@@ -313,17 +377,42 @@ def _parse_rooms(root, levels):
             "points": pts,
             "area_ft2": units.sqcm_to_sqft(area_cm2),
             "centroid_cm": centroid,
-            "conditioned": not _unconditioned_level(lv.get("name") if lv is not None else None),
+            "conditioned": _level_conditioned(lname, level_specs.get(lname or "")),
         })
     return by_level
 
 
-def extract_envelope(home_path: str, wall_boundaries: dict[str, str] | None = None) -> Envelope:
+# What a resolved below-face category means as a surface. Anything else is a named
+# buffer space (crawlspace / garage / ...) and becomes a `buffer_floor` carrying it.
+CATEGORY_FOR_BELOW = {"ground": "floor", "outdoor": "exposed_floor"}
+
+
+def _horizontal_surfaces(split):
+    """FaceSplit -> Surfaces. 'interior' emits nothing: conditioned-over-conditioned
+    is not part of the thermal envelope."""
+    out = []
+    for space, area in split.below.items():
+        if space == "interior":
+            continue
+        cat = CATEGORY_FOR_BELOW.get(space, "buffer_floor")
+        out.append(Surface(cat, area, None if cat == "floor" else space))
+    for space, area in split.above.items():
+        if space == "interior":
+            continue
+        out.append(Surface("ceiling", area, space))
+    return out
+
+
+def extract_envelope(home_path: str, wall_boundaries: dict[str, str] | None = None,
+                     levels: dict | None = None) -> Envelope:
     """Parse an exploded Home.xml or a packed .sh3d into a single-zone Envelope.
 
     `wall_boundaries` optionally maps SH3D wall id -> an explicit boundary
     (`exterior` / `ground` / `buffer` / `interior`) that overrides the geometric
     inference for that wall; untagged walls are inferred as before.
+
+    `levels` optionally maps a level's SH3D *name* -> `sidecar.LevelSpec`, overriding
+    that level's role, storey height, and what an undrawn neighbour above/below means.
     """
     wall_boundaries = wall_boundaries or {}
     _check_boundaries(wall_boundaries)
@@ -343,7 +432,39 @@ def extract_envelope(home_path: str, wall_boundaries: dict[str, str] | None = No
         if longitude is not None and (not math.isfinite(longitude) or not -180 <= longitude <= 180):
             raise ValueError("compass longitude must be finite and between -180 and 180")
 
-    levels = {lv.get("id"): lv for lv in root.findall("level")}
+    levels_xml = {lv.get("id"): lv for lv in root.findall("level")}
+    _names = [lv.get("name") or "" for lv in levels_xml.values()]
+    _dupes = sorted({n for n in _names if _names.count(n) > 1})
+    if _dupes and levels:
+        raise ValueError(f"level name(s) {_dupes} appear more than once in the model, so a "
+                         f"side-car `levels` entry can't address one unambiguously — "
+                         f"rename them in Sweet Home 3D")
+    level_specs = levels or {}
+    # Level specs address levels by NAME, so a rename in SH3D or a typo leaves an entry
+    # pointing at nothing. Silence would be worst here: a typo'd `role: ignore` on a duct
+    # chase reads as "handled" while quietly reintroducing the phantom volume it was
+    # written to remove. Mirrors the unknown-wall-id warning below.
+    unknown_levels = set(level_specs) - set(_names)
+    if unknown_levels:
+        warnings.warn(f"side-car `levels` reference level names not in the model "
+                      f"(renamed or typo'd?): {sorted(unknown_levels)}", stacklevel=2)
+
+    def _spec(lid):
+        lv = levels_xml.get(lid)
+        return level_specs.get((lv.get("name") or "") if lv is not None else "")
+
+    def _voids(lid):
+        """A level's notion of what an undrawn neighbour means; None falls through."""
+        spec = _spec(lid)
+        return (None, None) if spec is None else (spec.below_void, spec.above_void)
+
+    def _height_cm(lid, lv):
+        """The storey height actually used — a side-car override beats the SH3D value."""
+        spec = _spec(lid)
+        if spec is not None and spec.height_ft is not None:
+            return spec.height_ft * units.CM_PER_FT
+        return _f(lv, "height")
+
     walls_by_level: dict[str, list] = {}
     for w in root.findall("wall"):
         walls_by_level.setdefault(w.get("level"), []).append(w)
@@ -353,7 +474,27 @@ def extract_envelope(home_path: str, wall_boundaries: dict[str, str] | None = No
         warnings.warn(f"side-car `walls` reference unknown wall ids (redrawn or typo'd?): "
                       f"{sorted(unknown)}", stacklevel=2)
 
-    rooms_by_level = _parse_rooms(root, levels)
+    rooms_by_level = _parse_rooms(root, levels_xml, level_specs)
+    infos = [
+        stack.LevelInfo(id=lid, name=lv.get("name") or "",
+                        elevation_cm=_f(lv, "elevation"),
+                        elevation_index=int(lv.get("elevationIndex") or 0),
+                        height_cm=_height_cm(lid, lv),
+                        conditioned=_level_conditioned(lv.get("name"), _spec(lid)))
+        for lid, lv in levels_xml.items()
+    ]
+    # Roomless levels (joists, duct chases) are geometry, not conditioned space — they
+    # take no part in the stack and must not inject bounding-box volume either.
+    scaffolding = stack.scaffolding_ids(infos, rooms_by_level)
+    # A level the side-car explicitly marks `role: ignore` has been ACKNOWLEDGED by the
+    # modeler, so it must not draw the roomless-level warning below. Resolved here, above
+    # the level loop, rather than beside its other consumer (`resolve_faces`, further
+    # down) so the warning can see it: without that, a real walled duct chase warned on
+    # every run and the only way to silence it was to delete its walls.
+    ignore_ids = frozenset(l.id for l in infos
+                           if (_spec(l.id) is not None and _spec(l.id).role == "ignore"))
+    level_heights_ft = {l.name or l.id: units.cm_to_ft(l.height_cm) for l in infos}
+    level_volumes_ft3 = {l.name or l.id: 0.0 for l in infos}
     room_by_id = {rm["id"]: rm for lst in rooms_by_level.values() for rm in lst}
     room_gross_wall: dict[str, dict[str, float]] = {rid: {} for rid in room_by_id}   # ft^2 by cat
     room_openings: dict[str, float] = {rid: 0.0 for rid in room_by_id}               # ft^2 total
@@ -373,7 +514,34 @@ def extract_envelope(home_path: str, wall_boundaries: dict[str, str] | None = No
         ys = [y for w in walls for y in (_f(w, "yStart"), _f(w, "yEnd"))]
         minx, maxx, miny, maxy = min(xs), max(xs), min(ys), max(ys)
         level_extent[level_id] = (minx, maxx, miny, maxy)
-        lv = levels[level_id]
+        lv = levels_xml[level_id]
+        if level_id in scaffolding:
+            # Joists and duct chases are geometry, not conditioned space. But mid-modeling
+            # a REAL storey — walls drawn, rooms not yet — is indistinguishable from one,
+            # and dropping it can zero volume_ft3 outright and silently delete the whole
+            # infiltration term. So warn rather than guess: neither height nor extent
+            # separates a chase from a storey reliably, and a wrong guess buried in a
+            # number is worse than a loud message the modeler can act on.
+            #
+            # `role: ignore` is the one thing that DOES separate them, because it is the
+            # modeler saying so. It silences the message and nothing else — the exclusion
+            # the message announced still happens.
+            #
+            # The `continue` sits HERE, before the walls are classified, not after. A level
+            # excluded from the stack and from the conditioned volume is not conditioned
+            # space, so nothing can be on the thermal envelope BETWEEN it and outdoors: a
+            # walled duct chase used to be dropped from the volume and still ship its walls
+            # as `exterior_wall`, adding heating and cooling load for a storey the same run
+            # had just declared imaginary.
+            if (level_id not in ignore_ids
+                    and units.sqcm_to_sqft((maxx - minx) * (maxy - miny)) >= _SCAFFOLD_WARN_FT2):
+                warnings.warn(
+                    f"level {(lv.get('name') or level_id)!r} has walls but no rooms; it is "
+                    f"excluded from the conditioned volume (treated as joists/duct chase). "
+                    f"Draw rooms on it if it is conditioned space, or set "
+                    f"`levels.<name>.role: ignore` in the side-car to acknowledge it.",
+                    stacklevel=2)
+            continue
         is_basement = (lv.get("name") or "").lower().startswith("basement")
         rooms_here = rooms_by_level.get(level_id, [])
         conditioned_here = [r for r in rooms_here if r["conditioned"]]
@@ -405,10 +573,41 @@ def extract_envelope(home_path: str, wall_boundaries: dict[str, str] | None = No
                               key=lambda r: _dist_point_to_polygon_cm(sx, sy, r["points"]))["id"]
                     g = room_gross_wall[rid]
                     g[cat] = g.get(cat, 0.0) + share
-        # volume from footprint x height
-        footprint = (maxx - minx) * (maxy - miny)
-        volume_ft3 += (units.cm_to_ft(maxx - minx) * units.cm_to_ft(maxy - miny)
-                       * units.cm_to_ft(_f(lv, "height")))
+
+    # Conditioned volume for infiltration: sum conditioned-room floor area x height.
+    # A level with only UNconditioned rooms (garage/crawlspace) contributes nothing — it
+    # isn't part of the conditioned envelope the air leaks into.
+    #
+    # This is a walk of its own, over every level the model declares (plus any a room
+    # points at), and NOT of `walls_by_level` as it once was. Riding on the wall walk meant
+    # a level was accounted only if it carried walls, so a conditioned level with rooms and
+    # no walls drawn — an open loft, a storey whose partitions live on the level below —
+    # contributed 0 ft^3 and quietly took its share of the infiltration term with it. Walls
+    # decide surfaces; rooms decide volume; neither should gate the other.
+    #
+    # A ROOMLESS level still contributes nothing. `scaffolding_ids` claims every roomless
+    # level the moment ANY level has rooms, so the `elif not rooms_here` bounding-box
+    # fallback survives only for the wholly roomless model — where the legacy envelope owns
+    # the result anyway. It is kept for exactly that case.
+    for level_id in list(levels_xml) + [lid for lid in rooms_by_level if lid not in levels_xml]:
+        if level_id in scaffolding:
+            continue                           # joists / duct chase — warned about above
+        lv = levels_xml.get(level_id)
+        rooms_here = rooms_by_level.get(level_id, [])
+        # A room pointing at a level the model never declared has no storey height to
+        # multiply by, so it contributes nothing; it is walked anyway rather than skipped,
+        # so `level_volumes_ft3` says 0 about it instead of staying silent.
+        height_ft = units.cm_to_ft(_height_cm(level_id, lv)) if lv is not None else 0.0
+        cond_area_ft2 = sum(r["area_ft2"] for r in rooms_here if r["conditioned"])
+        if cond_area_ft2 > 0:
+            contributed = cond_area_ft2 * height_ft
+        elif not rooms_here and level_id in level_extent:
+            minx, maxx, miny, maxy = level_extent[level_id]
+            contributed = units.cm_to_ft(maxx - minx) * units.cm_to_ft(maxy - miny) * height_ft
+        else:
+            contributed = 0.0                  # only unconditioned rooms here (garage)
+        volume_ft3 += contributed
+        level_volumes_ft3[(lv.get("name") if lv is not None else None) or level_id] = contributed
 
     # An opening belongs to the envelope only if it sits on EXACTLY ONE exterior/
     # basement wall: within half-thickness + tolerance of the segment, projecting
@@ -468,21 +667,44 @@ def extract_envelope(home_path: str, wall_boundaries: dict[str, str] | None = No
     for wid, area_cm2 in wall_area_cm2.items():
         surfaces.append(Surface(wall_category[wid], units.sqcm_to_sqft(area_cm2)))
 
-    # Ceiling on the highest level, floor on the lowest (by elevation).
-    def level_elev(lid):
-        return float(levels[lid].get("elevation"))
+    # Resolve every conditioned room's floor and ceiling against the levels around it,
+    # so a partial storey leaves the rest of the level below facing the attic and an
+    # extension over undrawn crawlspace gets a buffer floor rather than nothing.
+    faces = stack.resolve_faces(
+        infos, rooms_by_level,
+        level_voids={l.id: _voids(l.id) for l in infos},
+        ignore_ids=ignore_ids)
 
-    top = bot = None
-    if level_extent:
+    # LEGACY FALLBACK — a model with no rooms at all resolves no faces, so the envelope
+    # still comes from level bounding boxes: ceiling on the highest level, floor on the
+    # lowest (by elevation). Kept, not deleted: a walls-only model is supported input.
+    def level_elev(lid):
+        return float(levels_xml[lid].get("elevation"))
+
+    # Gated on the absence of PARSED ROOMS, not on `not faces`. The two are not the same
+    # test: `faces` is also empty when the model has rooms of which none are conditioned —
+    # a garage-only model, or every level marked `role: ignore`. That is a resolver result
+    # ("nothing here is conditioned, so nothing has an envelope horizontal"), not a missing
+    # one, and running the fallback over it manufactured a bounding-box ceiling and floor
+    # for unconditioned space. A roomless model is the documented legacy case; this is it.
+    if not room_by_id and level_extent:
         levels_present = list(level_extent.keys())
         top = max(levels_present, key=level_elev)
         bot = min(levels_present, key=level_elev)
+        # NOTE these carry no `space` (there is no resolver result to name one), so
+        # loads.py gives them the plain outdoor ΔT. A walls-only model therefore loads
+        # its ceiling at the FULL ΔT while the same house drawn with rooms loads it
+        # through the attic policy — half, by default. That fork is deliberate for a
+        # legacy path with no adjacency information to reason from, but it means the two
+        # inputs are not interchangeable: draw rooms before comparing numbers.
         for lid, cat in ((top, "ceiling"), (bot, "floor")):
             minx, maxx, miny, maxy = level_extent[lid]
             surfaces.append(Surface(cat, units.sqcm_to_sqft((maxx - minx) * (maxy - miny))))
 
     # Assemble each room's sub-envelope. Net wall = its gross wall share minus its own
-    # openings; ceiling/floor mirror the whole-house top-ceiling / bottom-floor model.
+    # openings; horizontals come from the resolver, so the whole-house totals are the
+    # per-room ones by construction rather than a second, coarser estimate.
+    voids: dict[str, Void] = {}
     rooms: list[Room] = []
     for rid, rm in room_by_id.items():
         lid = rm["level_id"]
@@ -498,12 +720,20 @@ def extract_envelope(home_path: str, wall_boundaries: dict[str, str] | None = No
             surfs.append(Surface("window", wtot))
         if room_doors[rid] > 0.0:
             surfs.append(Surface("door", room_doors[rid]))
-        if lid == top:
-            surfs.append(Surface("ceiling", rm["area_ft2"]))
-        if lid == bot:
-            surfs.append(Surface("floor", rm["area_ft2"]))
-        lv = levels.get(lid)
-        height_ft = units.cm_to_ft(_f(lv, "height")) if lv is not None else 0.0
+        # A room absent from `faces` is unconditioned: the resolver ran and decided it has
+        # no envelope horizontal, so it correctly carries none. There is deliberately no
+        # per-room legacy fallback here — the bounding-box path above runs only when the
+        # model parsed no rooms AT ALL, and this loop does not execute in that case.
+        if rid in faces:
+            horizontals = _horizontal_surfaces(faces[rid])
+            surfs.extend(horizontals)
+            surfaces.extend(horizontals)
+            if faces[rid].void_below_ft2 > 0.0:
+                voids[rm["name"]] = _merge_void(
+                    voids.get(rm["name"]), faces[rid].void_below_ft2,
+                    CATEGORY_FOR_BELOW.get(faces[rid].void_space, "buffer_floor"))
+        lv = levels_xml.get(lid)
+        height_ft = units.cm_to_ft(_height_cm(lid, lv)) if lv is not None else 0.0
         rooms.append(Room(
             name=rm["name"], level_id=lid, area_ft2=rm["area_ft2"],
             centroid_cm=rm["centroid_cm"], conditioned=rm["conditioned"],
@@ -518,12 +748,14 @@ def extract_envelope(home_path: str, wall_boundaries: dict[str, str] | None = No
         for f in root.iter("pieceOfFurniture")
         if f.get("x") is not None and f.get("y") is not None
     ]
-    level_elevations = {lid: float(lv.get("elevation") or 0.0) for lid, lv in levels.items()}
+    level_elevations = {lid: float(lv.get("elevation") or 0.0) for lid, lv in levels_xml.items()}
 
     return Envelope(surfaces=surfaces, volume_ft3=volume_ft3,
                     windows_by_bearing=windows_by_bearing,
                     latitude=latitude, longitude=longitude, rooms=rooms,
-                    furniture=furniture, level_elevations=level_elevations)
+                    furniture=furniture, level_elevations=level_elevations,
+                    voids=voids, level_heights_ft=level_heights_ft,
+                    level_volumes_ft3=level_volumes_ft3)
 
 
 @dataclass(frozen=True)

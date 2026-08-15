@@ -42,7 +42,7 @@ class Analysis:
 def analyze(home_path: str, sidecar_path: str) -> Analysis:
     """Run the whole pipeline: a Home.xml or .sh3d + side-car -> computed results."""
     sc = sidecar.load_sidecar(sidecar_path)
-    env = geometry.extract_envelope(home_path, sc.wall_boundaries)
+    env = geometry.extract_envelope(home_path, sc.wall_boundaries, sc.levels)
     sc, station = _resolve_climate(sc, env)
     heating = loads.heating_load(env, sc)
     cooling = loads.cooling_load(env, sc) if sc.cooling is not None else None
@@ -66,7 +66,8 @@ def run(home_path: str, sidecar_path: str) -> str:
     """Run the pipeline and render the Markdown report."""
     a = analyze(home_path, sidecar_path)
     return report.render_heating(a.heating, a.sc, sizing=a.sizing, cooling=a.cooling,
-                                 station=a.station, ducts=a.ducts, duct_plan=a.duct_plan)
+                                 station=a.station, ducts=a.ducts, duct_plan=a.duct_plan,
+                                 env=a.env)
 
 
 def list_walls(home_path: str, sidecar_path: str | None = None) -> str:
