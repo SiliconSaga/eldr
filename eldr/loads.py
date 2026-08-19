@@ -125,7 +125,7 @@ def _conduction(surfaces, assemblies, dt_for):
     by_category: dict[str, float] = {}
     total = 0.0
     for s in surfaces:
-        u = _u_value(s.category, assemblies)
+        u = _u_value(s, assemblies)
         q = u * s.area_ft2 * dt_for(s)
         by_category[s.category] = by_category.get(s.category, 0.0) + q
         total += q
@@ -160,7 +160,35 @@ def assembly_borrow(category: str, assemblies: dict[str, float]) -> AssemblyBorr
     return None
 
 
-def _u_value(category, assemblies):
+def _u_value(surface, assemblies):
+    """U-value for a surface: its own assembly if it declared one, else its category's.
+
+    A tag selects among the several assemblies of ONE category — `exterior_wall/r0` for
+    the uninsulated sections of a wall that is mostly R-11. It deliberately cannot change
+    the category: that would let a mis-tag move a surface into or out of the envelope
+    silently, where a wrong U-value only makes a number wrong.
+
+    Both failure modes fall back to the category rather than raising, because a stale tag
+    on one wall should not stop the whole house computing — but neither is silent.
+    """
+    if surface.assembly is not None:
+        category, _variant = sidecar.split_assembly_key(surface.assembly)
+        if category != surface.category:
+            warnings.warn(
+                f"surface tagged `{surface.assembly}` but it is a '{surface.category}' — "
+                f"a tag selects a U-value within a category, it cannot change one; "
+                f"ignoring the tag and using `{surface.category}`", stacklevel=4)
+        elif surface.assembly in assemblies:
+            return assemblies[surface.assembly]
+        else:
+            warnings.warn(
+                f"surface tagged `{surface.assembly}` but the side-car declares no such "
+                f"assembly — falling back to `{surface.category}`; declare "
+                f"`assemblies.{surface.assembly}` or fix the tag", stacklevel=4)
+    return _category_u_value(surface.category, assemblies)
+
+
+def _category_u_value(category, assemblies):
     """U-value for a surface category, borrowing a related assembly when unset.
 
     A borrow is announced, never silent. The categories are related but not

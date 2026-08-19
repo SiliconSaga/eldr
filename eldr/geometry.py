@@ -128,6 +128,11 @@ class Surface:
     # set ΔT once policies are per-space: a buffer_floor over the crawl and one over the
     # garage share a category but not a temperature.
     space: str | None = None
+    # The assembly key this surface declared, if any. Selects a U-value WITHIN `category`
+    # — never changes the category, which stays the job of `walls: {boundary: ...}`. None
+    # means "use the category default", which is what every surface did before tagging
+    # existed, so an untagged model computes exactly as it did before.
+    assembly: str | None = None
 
 
 @dataclass(frozen=True)
