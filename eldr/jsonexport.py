@@ -101,10 +101,22 @@ def analysis_to_dict(a) -> dict:
         "voids": {name: {"area_ft2": v.area_ft2, "category": v.category}
                   for name, v in a.env.voids.items()},
         # New in this cut: the whole-house horizontal split becomes inspectable without
-        # re-deriving it. `space` is null for anything not facing a buffer space.
+        # re-deriving it. `space` is null for anything not facing a buffer space, and
+        # `assembly` is null for anything using its category's default U-value — which
+        # is every surface in an untagged model.
         "surfaces": [
-            {"category": s.category, "area_ft2": s.area_ft2, "space": s.space}
+            {"category": s.category, "area_ft2": s.area_ft2, "space": s.space,
+             "assembly": s.assembly}
             for s in a.env.surfaces
+        ],
+        # One row per (category, assembly) for categories that MIX, mirroring the
+        # report's *Assembly coverage* table. Empty when nothing is tagged. A consumer
+        # comparing two exports can see a variant's area move, which is the only signal
+        # available that a tag was lost with a redrawn wall.
+        "assembly_coverage": [
+            {"category": r.category, "assembly": r.assembly, "u_value": r.u_value,
+             "area_ft2": r.area_ft2, "surfaces": r.count}
+            for r in loads.assembly_coverage(a.env.surfaces, a.sc.assemblies)
         ],
         "ducts": None,
     }

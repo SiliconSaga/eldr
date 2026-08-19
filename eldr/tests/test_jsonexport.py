@@ -220,3 +220,55 @@ def test_json_cooling_factor_is_null_without_a_cooling_block(tmp_path):
     payload = jsonexport.analysis_to_dict(cli.analyze(home, sc))
     assert payload["spaces"]["attic"]["cooling_factor"] is None
     assert payload["spaces"]["attic"]["heating_factor"] == pytest.approx(0.80)
+
+
+# --- assemblies in the export ---------------------------------------------------------
+
+# The same multi-level model with one Main wall tagged, plus the variant declared.
+_TAGGED_FIXTURE = MULTI_LEVEL_FIXTURE.replace(
+    "<wall id='m-n' level='LM' xStart='0' yStart='0' xEnd='400' yEnd='0' "
+    "height='250' thickness='10'/>",
+    "<wall id='m-n' level='LM' xStart='0' yStart='0' xEnd='400' yEnd='0' "
+    "height='250' thickness='10'>"
+    "<property name='eldr.assembly' value='exterior_wall/r0'/></wall>",
+)
+_TAGGED_SIDECAR = STACK_SIDECAR + "  exterior_wall/r0: 0.24\n"
+
+
+def test_json_surfaces_carry_their_assembly(tmp_path):
+    home, sc = _stack_paths(tmp_path, _TAGGED_FIXTURE, _TAGGED_SIDECAR)
+    payload = jsonexport.analysis_to_dict(cli.analyze(home, sc))
+    walls = [s for s in payload["surfaces"] if s["category"] == "exterior_wall"]
+    assert any(s["assembly"] == "exterior_wall/r0" for s in walls)
+    assert any(s["assembly"] is None for s in walls)
+
+
+def test_json_untagged_surfaces_carry_a_null_assembly(tmp_path):
+    """The key is always present, so a consumer can tell 'nothing tagged' from an
+    export predating the key — the same contract `voids` already keeps."""
+    home, sc = _stack_paths(tmp_path, MULTI_LEVEL_FIXTURE, STACK_SIDECAR)
+    payload = jsonexport.analysis_to_dict(cli.analyze(home, sc))
+    assert payload["surfaces"]
+    assert all(s["assembly"] is None for s in payload["surfaces"])
+
+
+def test_json_carries_assembly_coverage(tmp_path):
+    home, sc = _stack_paths(tmp_path, _TAGGED_FIXTURE, _TAGGED_SIDECAR)
+    payload = jsonexport.analysis_to_dict(cli.analyze(home, sc))
+    rows = payload["assembly_coverage"]
+    tagged = next(r for r in rows if r["assembly"] == "exterior_wall/r0")
+    assert tagged["u_value"] == 0.24
+    assert tagged["surfaces"] >= 1
+    assert any(r["assembly"] is None and r["category"] == "exterior_wall" for r in rows)
+
+
+def test_json_assembly_coverage_is_empty_when_nothing_is_tagged(tmp_path):
+    home, sc = _stack_paths(tmp_path, MULTI_LEVEL_FIXTURE, STACK_SIDECAR)
+    payload = jsonexport.analysis_to_dict(cli.analyze(home, sc))
+    assert payload["assembly_coverage"] == []
+
+
+def test_json_stays_serialisable_with_assemblies(tmp_path):
+    home, sc = _stack_paths(tmp_path, _TAGGED_FIXTURE, _TAGGED_SIDECAR)
+    payload = json.loads(jsonexport.render_json(cli.analyze(home, sc)))
+    assert payload["assembly_coverage"][0]["category"] == "exterior_wall"
