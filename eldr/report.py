@@ -68,12 +68,14 @@ def render_heating(result: loads.HeatingResult, sc: sidecar.SideCar,
 def _assumptions_section(env: geometry_mod.Envelope, sc: sidecar.SideCar) -> list[str]:
     """The assumptions the numbers above are standing on, echoed back.
 
-    Four things the engine decided quietly and the reader cannot otherwise see: the
+    Five things the engine decided quietly and the reader cannot otherwise see: the
     storey height each level was given, the ΔT fraction each buffer space resolved to,
-    any U-value that had to be borrowed from a related assembly, and any floor area
-    modeled over a space nobody drew — then the open questions those decisions leave.
+    which surfaces claimed an assembly of their own, any U-value that had to be borrowed
+    from a related assembly, and any floor area modeled over a space nobody drew — then
+    the open questions those decisions leave.
     """
     blocks = (_levels_block(env, sc) + _spaces_block(env, sc)
+              + _coverage_block(env, sc)
               + _borrows_block(env, sc) + _voids_block(env, sc)
               + _open_questions_block(env, sc))
     if not blocks:
@@ -207,6 +209,36 @@ def _summer_input(policy: spaces_mod.SpacePolicy, effective: spaces_mod.SpacePol
                 f"reused for summer")
     return (f"unvented fallback {spaces_mod.UNVENTED_FACTOR:.2f} ({origin}) — winter "
             f"shorthand, reused for summer")
+
+
+def _coverage_block(env: geometry_mod.Envelope, sc: sidecar.SideCar) -> list[str]:
+    """Which surfaces claimed an assembly of their own, and which took the default.
+
+    Emitted only for categories that actually MIX, because a category whose surfaces are
+    all untagged says nothing worth a row and would bury the one that does.
+    """
+    rows = loads.assembly_coverage(env.surfaces, sc.assemblies)
+    if not rows:
+        return []
+    lines = ["", "### Assembly coverage", "",
+             "| Category | Assembly | U used | Area | Surfaces |",
+             "|---|---|---:|---:|---:|"]
+    for r in rows:
+        label = f"`{r.assembly}`" if r.assembly else "_(untagged — category default)_"
+        lines.append(f"| `{r.category}` | {label} | {r.u_value:g} "
+                     f"| {r.area_ft2:,.1f} ft² | {r.count} |")
+    lines += [
+        "",
+        "_A surface may name a variant of its category — `exterior_wall/r0` for the "
+        "uninsulated sections of a wall that is mostly insulated — and take that U-value "
+        "instead of the category default. The whole-house tables above stay keyed by "
+        "category, so this is the only place the split is visible._",
+        "",
+        "_Read this table across runs, not just within one. Redrawing a wall in Sweet "
+        "Home 3D gives it a new id and drops its properties, so nothing can report that a "
+        "tag was lost — but a variant's area shrinking between two runs says it plainly._",
+    ]
+    return lines
 
 
 def _borrows_block(env: geometry_mod.Envelope, sc: sidecar.SideCar) -> list[str]:

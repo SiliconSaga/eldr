@@ -750,3 +750,75 @@ def test_cooling_section_explains_what_sensible_latent_and_total_are():
     assert "no component breakdown" in note          # why latent has no rows of its own
     assert "occupants" in note and "infiltrating air" in note   # where latent comes from
     assert "sized on **sensible** alone" in note     # and why the CFM misses the total
+
+
+# --- assembly coverage ----------------------------------------------------------------
+
+_COV_ASM = {"exterior_wall": 0.10, "exterior_wall/r0": 0.25, "window": 0.30}
+
+
+def _cov_sc():
+    return sidecar.SideCar(
+        assemblies=dict(_COV_ASM),
+        design=sidecar.DesignConditions(70, 20, 50),
+        infiltration_ach=0.5,
+    )
+
+
+def _cov_env():
+    return geometry.Envelope(surfaces=[
+        geometry.Surface("exterior_wall", 300.0),
+        geometry.Surface("exterior_wall", 100.0, assembly="exterior_wall/r0"),
+        geometry.Surface("exterior_wall", 50.0, assembly="exterior_wall/r0"),
+        geometry.Surface("window", 40.0),          # window never mixes -> omitted
+    ], volume_ft3=0.0)
+
+
+def test_coverage_buckets_by_category_and_assembly():
+    rows = loads.assembly_coverage(_cov_env().surfaces, _COV_ASM)
+    tagged = next(r for r in rows if r.assembly == "exterior_wall/r0")
+    assert tagged.area_ft2 == pytest.approx(150.0)
+    assert tagged.count == 2
+    assert tagged.u_value == 0.25
+
+
+def test_coverage_untagged_row_reports_the_category_default():
+    rows = loads.assembly_coverage(_cov_env().surfaces, _COV_ASM)
+    untagged = next(r for r in rows if r.category == "exterior_wall" and r.assembly is None)
+    assert untagged.area_ft2 == pytest.approx(300.0)
+    assert untagged.u_value == 0.10
+
+
+def test_coverage_omits_categories_that_do_not_mix():
+    """A category with no tagged surface says nothing worth a row, and listing every
+    one of them would bury the category that actually splits."""
+    rows = loads.assembly_coverage(_cov_env().surfaces, _COV_ASM)
+    assert all(r.category != "window" for r in rows)
+
+
+def test_coverage_orders_variants_before_the_untagged_remainder():
+    rows = loads.assembly_coverage(_cov_env().surfaces, _COV_ASM)
+    assert [r.assembly for r in rows] == ["exterior_wall/r0", None]
+
+
+def test_coverage_is_empty_for_a_wholly_untagged_envelope():
+    env = geometry.Envelope(surfaces=[geometry.Surface("exterior_wall", 300.0)],
+                            volume_ft3=0.0)
+    assert loads.assembly_coverage(env.surfaces, _COV_ASM) == []
+
+
+def test_report_renders_the_coverage_block():
+    md = report.render_heating(loads.heating_load(_cov_env(), _cov_sc()), _cov_sc(),
+                               env=_cov_env())
+    assert "### Assembly coverage" in md
+    assert "`exterior_wall/r0`" in md
+    assert "_(untagged — category default)_" in md
+    # the note has to say what the table is FOR, not just what it shows
+    assert "shrinking between two runs" in md
+
+
+def test_report_omits_the_coverage_block_when_nothing_is_tagged():
+    env = geometry.Envelope(surfaces=[geometry.Surface("exterior_wall", 300.0)],
+                            volume_ft3=0.0)
+    md = report.render_heating(loads.heating_load(env, _cov_sc()), _cov_sc(), env=env)
+    assert "### Assembly coverage" not in md

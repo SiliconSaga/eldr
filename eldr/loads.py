@@ -133,6 +133,47 @@ def _conduction(surfaces, assemblies, dt_for):
 
 
 @dataclass(frozen=True)
+class CoverageRow:
+    """One (category, assembly) bucket of the envelope, for the coverage table."""
+    category: str
+    assembly: str | None      # None = the untagged remainder of the category
+    u_value: float
+    area_ft2: float
+    count: int
+
+
+def assembly_coverage(surfaces, assemblies) -> list[CoverageRow]:
+    """Area and surface count per (category, assembly), for categories that MIX.
+
+    A category whose surfaces are all untagged is omitted: the table exists to show a
+    split, and listing every category unsplit would bury the one that matters.
+
+    This is also the only detector available for a LOST tag. When a wall is redrawn in
+    Sweet Home 3D its id and its properties go with it, so nothing can report "this used
+    to be tagged" — but a variant's area shrinking between two runs is visible here, and
+    the archived runs are what make that comparison possible.
+    """
+    buckets: dict[tuple[str, str | None], tuple[float, int]] = {}
+    for s in surfaces:
+        key = (s.category, s.assembly)
+        area, count = buckets.get(key, (0.0, 0))
+        buckets[key] = (area + s.area_ft2, count + 1)
+    mixed = {cat for cat, asm in buckets if asm is not None}
+    rows = []
+    for (category, assembly), (area, count) in buckets.items():
+        if category not in mixed:
+            continue
+        with warnings.catch_warnings():        # the table reports; it does not re-warn
+            warnings.simplefilter("ignore")
+            u = _u_value(geometry.Surface(category, 0.0, assembly=assembly), assemblies)
+        rows.append(CoverageRow(category, assembly, u, area, count))
+    # Category, then variants alphabetically, then the untagged remainder LAST — the
+    # remainder is the baseline the variants are exceptions to, and reads better beneath
+    # them than above them.
+    return sorted(rows, key=lambda r: (r.category, r.assembly is None, r.assembly or ""))
+
+
+@dataclass(frozen=True)
 class AssemblyBorrow:
     """A U-value a surface category had to borrow because the side-car declares none."""
     category: str          # the recipient — what the surface actually is
