@@ -1019,6 +1019,77 @@ def test_untagged_model_produces_no_assemblies(tmp_path):
     assert all(s.assembly is None for s in env.surfaces)
 
 
+# --- tags reaching PER-ROOM surfaces --------------------------------------------------
+#
+# Per-room surfaces aggregate: one `Surface("window", total)` used to cover every window
+# in a room. That is where a blended U does its damage, because per-room CFM is what
+# Manual T and the duct sizing run on — so a tagged window must survive as its own
+# surface rather than dissolving into the room's average.
+
+ROOM_TAGGED_FIXTURE = MULTI_LEVEL_FIXTURE.replace(
+    "<wall id='m-n' level='LM' xStart='0' yStart='0' xEnd='400' yEnd='0' "
+    "height='250' thickness='10'/>",
+    "<wall id='m-n' level='LM' xStart='0' yStart='0' xEnd='400' yEnd='0' "
+    "height='250' thickness='10'>"
+    "<property name='eldr.assembly' value='exterior_wall/r0'/></wall>",
+).replace(
+    "  <room id='rm' level='LM' name='Living room'>",
+    "  <doorOrWindow id='w-old' level='LM' catalogId='eTeks#window' "
+    "name='Sash [window/single]' x='100' y='300' width='100' height='100'/>\n"
+    "  <doorOrWindow id='w-new' level='LM' catalogId='eTeks#window' "
+    "name='Picture' x='300' y='300' width='100' height='100'/>\n"
+    "  <room id='rm' level='LM' name='Living room'>"
+    "<property name='eldr.assembly' value='ceiling/r19'/>",
+)
+
+
+def _room(env, name):
+    return next(r for r in env.rooms if r.name == name)
+
+
+def _assemblies_in(room, category):
+    return sorted((s.assembly for s in room.surfaces if s.category == category),
+                  key=lambda a: (a is not None, a))
+
+
+def test_room_windows_split_by_assembly(tmp_path):
+    p = tmp_path / "Home.xml"
+    p.write_text(ROOM_TAGGED_FIXTURE)
+    env = geometry.extract_envelope(str(p))
+    assert _assemblies_in(_room(env, "Living room"), "window") == [None, "window/single"]
+
+
+def test_room_walls_split_by_assembly(tmp_path):
+    p = tmp_path / "Home.xml"
+    p.write_text(ROOM_TAGGED_FIXTURE)
+    env = geometry.extract_envelope(str(p))
+    got = _assemblies_in(_room(env, "Living room"), "exterior_wall")
+    assert "exterior_wall/r0" in got
+    assert None in got          # the other three Main walls are untagged
+
+
+def test_room_property_tags_its_ceiling(tmp_path):
+    """A room produces a ceiling AND a floor, which is why one property carries a list
+    of keys — each lands on the surfaces of its own category."""
+    p = tmp_path / "Home.xml"
+    p.write_text(ROOM_TAGGED_FIXTURE)
+    env = geometry.extract_envelope(str(p))
+    assert _assemblies_in(_room(env, "Living room"), "ceiling") == ["ceiling/r19"]
+
+
+def test_whole_house_still_equals_sum_of_rooms_with_tags(tmp_path):
+    """The level-stack invariant must survive the re-keying: splitting a room's
+    aggregate by assembly may not change how much area there is."""
+    p = tmp_path / "Home.xml"
+    p.write_text(ROOM_TAGGED_FIXTURE)
+    env = geometry.extract_envelope(str(p))
+    for cat in ("window", "exterior_wall"):
+        per_room = sum(s.area_ft2 for r in env.rooms for s in r.surfaces
+                       if s.category == cat and r.conditioned)
+        whole = sum(s.area_ft2 for s in env.surfaces if s.category == cat)
+        assert per_room == pytest.approx(whole, rel=1e-9), cat
+
+
 def test_a_tag_cannot_flip_a_door_into_a_window(tmp_path):
     """Window-vs-door is sniffed from the name, and the tag syntax puts a category name
     INTO the name. Without stripping the bracket first, `[window/single]` on a door

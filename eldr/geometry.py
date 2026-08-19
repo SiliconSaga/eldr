@@ -448,6 +448,10 @@ def _parse_rooms(root, levels_xml, level_specs=None):
             "area_ft2": units.sqcm_to_sqft(area_cm2),
             "centroid_cm": centroid,
             "conditioned": _level_conditioned(lname, level_specs.get(lname or "")),
+            # Rooms are tagged by PROPERTY only, never by name — Sweet Home 3D draws a
+            # room's name on the plan, so a bracketed tag there would be visible clutter
+            # on every drawing. Walls and furniture have no such display.
+            "assembly_tags": _element_assembly_tags(r),
         })
     return by_level
 
@@ -457,19 +461,39 @@ def _parse_rooms(root, levels_xml, level_specs=None):
 CATEGORY_FOR_BELOW = {"ground": "floor", "outdoor": "exposed_floor"}
 
 
-def _horizontal_surfaces(split):
+def _tags_by_category(keys) -> dict[str, str]:
+    """{category: assembly key} from a list of keys, first win per category.
+
+    One object declares several keys because it produces surfaces in several categories
+    — a room has both a ceiling and a floor. Splitting them by their own category is what
+    lets a single property carry both without a property name per category.
+    """
+    out: dict[str, str] = {}
+    for key in keys:
+        category = sidecar.split_assembly_key(key)[0]
+        out.setdefault(category, key)
+    return out
+
+
+def _horizontal_surfaces(split, tags=None):
     """FaceSplit -> Surfaces. 'interior' emits nothing: conditioned-over-conditioned
-    is not part of the thermal envelope."""
+    is not part of the thermal envelope.
+
+    `tags` is the owning room's {category: assembly key}, so a room declaring
+    `ceiling/r19` gets it on the ceiling it actually resolved to.
+    """
+    tags = tags or {}
     out = []
     for space, area in split.below.items():
         if space == "interior":
             continue
         cat = CATEGORY_FOR_BELOW.get(space, "buffer_floor")
-        out.append(Surface(cat, area, None if cat == "floor" else space))
+        out.append(Surface(cat, area, None if cat == "floor" else space,
+                           assembly=tags.get(cat)))
     for space, area in split.above.items():
         if space == "interior":
             continue
-        out.append(Surface("ceiling", area, space))
+        out.append(Surface("ceiling", area, space, assembly=tags.get("ceiling")))
     return out
 
 
@@ -566,10 +590,21 @@ def extract_envelope(home_path: str, wall_boundaries: dict[str, str] | None = No
     level_heights_ft = {l.name or l.id: units.cm_to_ft(l.height_cm) for l in infos}
     level_volumes_ft3 = {l.name or l.id: 0.0 for l in infos}
     room_by_id = {rm["id"]: rm for lst in rooms_by_level.values() for rm in lst}
-    room_gross_wall: dict[str, dict[str, float]] = {rid: {} for rid in room_by_id}   # ft^2 by cat
+    # Keyed by (category, assembly) rather than category alone: a room's tagged window
+    # has to survive as its own surface instead of dissolving into the room's average,
+    # because per-room CFM is what the duct sizing and Manual T run on. `assembly` is
+    # None for the untagged majority, so an untagged model produces exactly the keys it
+    # always did.
+    room_gross_wall: dict[str, dict[tuple[str, str | None], float]] = {
+        rid: {} for rid in room_by_id}                                               # ft^2
     room_openings: dict[str, float] = {rid: 0.0 for rid in room_by_id}               # ft^2 total
-    room_doors: dict[str, float] = {rid: 0.0 for rid in room_by_id}                  # ft^2
+    room_doors: dict[str, dict[str | None, float]] = {rid: {} for rid in room_by_id}  # ft^2
     room_windows: dict[str, dict[float, float]] = {rid: {} for rid in room_by_id}    # ft^2 by bearing
+    # Windows carry two independent splits: BEARING drives solar gain and ASSEMBLY drives
+    # conduction. Keeping them as separate maps rather than one tuple-keyed map says that
+    # in the types — solar does not care which glazing a window is, and U does not care
+    # which way it faces.
+    room_window_assembly: dict[str, dict[str | None, float]] = {rid: {} for rid in room_by_id}
 
     surfaces: list[Surface] = []
     windows_by_bearing: dict[float, float] = {}
@@ -647,7 +682,8 @@ def extract_envelope(home_path: str, wall_boundaries: dict[str, str] | None = No
                     rid = min(conditioned_here,
                               key=lambda r: _dist_point_to_polygon_cm(sx, sy, r["points"]))["id"]
                     g = room_gross_wall[rid]
-                    g[cat] = g.get(cat, 0.0) + share
+                    gkey = (cat, wall_assembly[w.get("id")])
+                    g[gkey] = g.get(gkey, 0.0) + share
 
     # Conditioned volume for infiltration: sum conditioned-room floor area x height.
     # A level with only UNconditioned rooms (garage/crawlspace) contributes nothing — it
@@ -737,7 +773,10 @@ def extract_envelope(home_path: str, wall_boundaries: dict[str, str] | None = No
                       key=lambda r: _dist_point_to_polygon_cm(dx, dy, r["points"]))["id"]
             room_openings[rid] += area_ft2
             if category == "door":
-                room_doors[rid] += area_ft2
+                room_doors[rid][assembly] = room_doors[rid].get(assembly, 0.0) + area_ft2
+            else:
+                room_window_assembly[rid][assembly] = (
+                    room_window_assembly[rid].get(assembly, 0.0) + area_ft2)
         if category == "window":
             minx, maxx, miny, maxy = level_extent[dw.get("level")]
             key = _window_bearing(wall_by_id[host], (minx + maxx) / 2, (miny + maxy) / 2, north_dir)
@@ -792,22 +831,29 @@ def extract_envelope(home_path: str, wall_boundaries: dict[str, str] | None = No
         lid = rm["level_id"]
         surfs: list[Surface] = []
         openings = room_openings[rid]
-        for scat, gross in room_gross_wall[rid].items():
+        # Netting is UNCHANGED by tagging: openings still come off the gross wall in
+        # iteration order with the leftover spilling forward. The only difference is that
+        # the buckets are now (category, assembly) instead of category, so an untagged
+        # model walks exactly the same sequence it always did. Changing the netting rule
+        # in the same commit as the re-keying would make any regression unattributable.
+        for (scat, sasm), gross in room_gross_wall[rid].items():
             net = max(0.0, gross - openings)
-            openings = max(0.0, openings - gross)   # spill leftover to the next category
+            openings = max(0.0, openings - gross)   # spill leftover to the next bucket
             if net > 0.0:
-                surfs.append(Surface(scat, net))
-        wtot = sum(room_windows[rid].values())
-        if wtot > 0.0:
-            surfs.append(Surface("window", wtot))
-        if room_doors[rid] > 0.0:
-            surfs.append(Surface("door", room_doors[rid]))
+                surfs.append(Surface(scat, net, assembly=sasm))
+        for wasm, warea in room_window_assembly[rid].items():
+            if warea > 0.0:
+                surfs.append(Surface("window", warea, assembly=wasm))
+        for dasm, darea in room_doors[rid].items():
+            if darea > 0.0:
+                surfs.append(Surface("door", darea, assembly=dasm))
         # A room absent from `faces` is unconditioned: the resolver ran and decided it has
         # no envelope horizontal, so it correctly carries none. There is deliberately no
         # per-room legacy fallback here — the bounding-box path above runs only when the
         # model parsed no rooms AT ALL, and this loop does not execute in that case.
         if rid in faces:
-            horizontals = _horizontal_surfaces(faces[rid])
+            horizontals = _horizontal_surfaces(faces[rid],
+                                               _tags_by_category(rm["assembly_tags"]))
             surfs.extend(horizontals)
             surfaces.extend(horizontals)
             if faces[rid].void_below_ft2 > 0.0:
