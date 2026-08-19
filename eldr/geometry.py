@@ -576,6 +576,7 @@ def extract_envelope(home_path: str, wall_boundaries: dict[str, str] | None = No
     # Track net exterior wall area per (level, category) so we can subtract openings.
     wall_area_cm2: dict[str, float] = {}      # key: wall id -> net gross area (cm^2)
     wall_category: dict[str, str] = {}         # wall id -> category
+    wall_assembly: dict[str, str | None] = {}  # wall id -> declared assembly key, if any
     level_extent: dict[str, tuple] = {}        # level -> (minx,maxx,miny,maxy)
     volume_ft3 = 0.0
 
@@ -631,6 +632,10 @@ def extract_envelope(home_path: str, wall_boundaries: dict[str, str] | None = No
             area = _wall_length_cm(w) * _f(w, "height")
             wall_area_cm2[w.get("id")] = area
             wall_category[w.get("id")] = cat
+            # Read the tag against the category the boundary resolution just produced,
+            # so a wall tagged `exterior_wall/r0` that turns out to be below grade is
+            # simply untagged for `basement_wall` rather than mis-priced.
+            wall_assembly[w.get("id")] = _tag_for(w, cat)
             # Split the wall's gross area among the conditioned rooms it runs behind:
             # sample along it, assign each point to the nearest conditioned room. A
             # facade shared by several rooms is divided; a corner-to-corner wall lands
@@ -713,9 +718,15 @@ def extract_envelope(home_path: str, wall_boundaries: dict[str, str] | None = No
             continue                                # interior opening -> not an envelope surface
         area_cm2 = _f(dw, "width") * _f(dw, "height")
         area_ft2 = units.sqcm_to_sqft(area_cm2)
-        label = (dw.get("catalogId", "") + " " + (dw.get("name") or "")).lower()
+        # Strip bracketed assembly tags before sniffing window-vs-door. The tag syntax
+        # puts a category name INTO the name — `Front door [window/single]` would
+        # otherwise read as a window purely because its tag says so, letting a tag change
+        # a category by the back door, which is exactly what tags must never do.
+        label = (dw.get("catalogId", "") + " "
+                 + _BRACKETED.sub(" ", dw.get("name") or "")).lower()
         category = "window" if "window" in label else "door"
-        surfaces.append(Surface(category, area_ft2))
+        assembly = _tag_for(dw, category)
+        surfaces.append(Surface(category, area_ft2, assembly=assembly))
         wall_area_cm2[host] = max(0.0, wall_area_cm2[host] - area_cm2)
         # Attribute the opening to the nearest room on its level, by its own position.
         rooms_here = rooms_by_level.get(dw.get("level"), [])
@@ -735,7 +746,8 @@ def extract_envelope(home_path: str, wall_boundaries: dict[str, str] | None = No
                 room_windows[rid][key] = room_windows[rid].get(key, 0.0) + area_ft2
 
     for wid, area_cm2 in wall_area_cm2.items():
-        surfaces.append(Surface(wall_category[wid], units.sqcm_to_sqft(area_cm2)))
+        surfaces.append(Surface(wall_category[wid], units.sqcm_to_sqft(area_cm2),
+                                assembly=wall_assembly.get(wid)))
 
     # Resolve every conditioned room's floor and ceiling against the levels around it,
     # so a partial storey leaves the rest of the level below facing the attic and an

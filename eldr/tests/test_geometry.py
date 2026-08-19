@@ -968,3 +968,72 @@ def test_bracketed_tag_among_other_text_and_brackets():
 def test_no_name_is_no_tag():
     assert geometry._name_assembly_tags(None) == []
     assert geometry._name_assembly_tags("") == []
+
+
+# --- tags reaching whole-house surfaces -----------------------------------------------
+
+# The base box with one wall tagged by property and the window tagged by name. Both
+# categories keep an UNtagged member, so a broken split cannot hide: a category with a
+# single surface would aggregate correctly whether or not the tag was read.
+TAGGED_FIXTURE = FIXTURE.replace(
+    "<wall id='w-n' level='L1' xStart='0' yStart='0' xEnd='1000' yEnd='0' "
+    "height='300' thickness='10'/>",
+    "<wall id='w-n' level='L1' xStart='0' yStart='0' xEnd='1000' yEnd='0' "
+    "height='300' thickness='10'>"
+    "<property name='eldr.assembly' value='exterior_wall/r0'/></wall>",
+).replace(
+    "name='Window' x='500' y='500'",
+    "name='Window [window/single]' x='500' y='500'",
+)
+
+
+def _surface_assemblies(env, category):
+    return sorted((s.assembly for s in env.surfaces if s.category == category),
+                  key=lambda a: (a is not None, a))
+
+
+def test_wall_property_tag_reaches_its_surface(tmp_path):
+    p = tmp_path / "Home.xml"
+    p.write_text(TAGGED_FIXTURE)
+    env = geometry.extract_envelope(str(p))
+    tagged = [s for s in env.surfaces
+              if s.category == "exterior_wall" and s.assembly == "exterior_wall/r0"]
+    assert len(tagged) == 1
+    # the other three exterior walls stay untagged — the split is real, not blanket
+    assert _surface_assemblies(env, "exterior_wall").count(None) == 3
+
+
+def test_window_name_tag_reaches_its_surface(tmp_path):
+    p = tmp_path / "Home.xml"
+    p.write_text(TAGGED_FIXTURE)
+    env = geometry.extract_envelope(str(p))
+    assert _surface_assemblies(env, "window") == ["window/single"]
+
+
+def test_untagged_model_produces_no_assemblies(tmp_path):
+    """The control. Every surface in an untagged model must carry None, or the
+    tagged-fixture assertions above prove nothing about tagging specifically."""
+    p = tmp_path / "Home.xml"
+    p.write_text(FIXTURE)
+    env = geometry.extract_envelope(str(p))
+    assert all(s.assembly is None for s in env.surfaces)
+
+
+def test_a_tag_cannot_flip_a_door_into_a_window(tmp_path):
+    """Window-vs-door is sniffed from the name, and the tag syntax puts a category name
+    INTO the name. Without stripping the bracket first, `[window/single]` on a door
+    would silently reclassify it — a tag changing a category by the back door."""
+    xml = FIXTURE.replace(
+        "<doorOrWindow id='win1' level='L1' catalogId='eTeks#window' name='Window' "
+        "x='500' y='500' width='100' height='100'/>",
+        "<doorOrWindow id='win1' level='L1' catalogId='eTeks#doorFrame' "
+        "name='Patio [window/single]' x='500' y='500' width='100' height='100'/>",
+    )
+    p = tmp_path / "Home.xml"
+    p.write_text(xml)
+    env = geometry.extract_envelope(str(p))
+    assert _by_cat(env).get("window") is None
+    doors = [s for s in env.surfaces if s.category == "door"]
+    assert len(doors) == 1
+    # and its window-category tag is correctly not applied to a door
+    assert doors[0].assembly is None
