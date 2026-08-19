@@ -8,11 +8,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import math
 import os
+import re
 import warnings
 import zipfile
 from xml.etree.ElementTree import Element
 import defusedxml.ElementTree as DET
-from eldr import stack, units
+from eldr import sidecar, stack, units
 
 # Cap the parsed Home.xml — a .sh3d/Home.xml can be third-party input, so bound it
 # (with defusedxml) against zip-bomb / billion-laughs style attacks.
@@ -23,6 +24,70 @@ MAX_HOME_XML_BYTES = 64 * 1024 * 1024
 _BOUNDARY_TO_CATEGORY = {"exterior": "exterior_wall", "ground": "basement_wall",
                          "buffer": "buffer_wall"}
 _VALID_BOUNDARIES = frozenset(_BOUNDARY_TO_CATEGORY) | {"interior"}
+
+# The `<property>` name an object uses to declare its assembly. Sweet Home 3D round-trips
+# arbitrary properties through its own save (HomeXMLExporter writes every name returned by
+# getPropertyNames), and our normalize.sh strips only the `com.eteks.sweethome3d.*` editor
+# state — so a tag written here survives both. It must never take that prefix.
+ASSEMBLY_PROPERTY = "eldr.assembly"
+
+# A bracketed token in a furniture name, e.g. "Bedroom window [window/single]".
+_BRACKETED = re.compile(r"\[([^\[\]]*)\]")
+
+
+def _element_assembly_tags(elem: Element) -> list[str]:
+    """Assembly keys declared by `<property name='eldr.assembly' value='...'/>`.
+
+    The value is a whitespace-separated LIST because one object can produce surfaces in
+    more than one category: a room has both a ceiling and a floor, and they are different
+    assemblies. Each key carries its own category, so one property disambiguates without
+    needing a separate property name per category.
+
+    No validation against the side-car happens here — an undeclared or mismatched key is
+    the load path's problem to report. Keeping parsing independent of what is declared
+    means a model can be inspected without a side-car at all.
+    """
+    for p in elem.findall("property"):
+        if p.get("name") == ASSEMBLY_PROPERTY:
+            return (p.get("value") or "").split()
+    return []
+
+
+def _name_assembly_tags(name: str | None) -> list[str]:
+    """Assembly keys declared by bracketed tokens in a furniture name.
+
+    This exists because Sweet Home 3D's UI can edit a furniture `name` and cannot edit a
+    custom property — so this is the only way an owner tags a window without tooling.
+
+    A token counts only when it contains a slash AND its category prefix is real. That
+    is what makes the convention safe to overlay on names people already use: an ordinary
+    `[kitchen]` is invisible here, so no existing naming breaks. The cost is that a
+    genuine typo in the category (`[windwo/single]`) reads as ordinary text and is
+    silently ignored; the report's coverage table is where that surfaces, as a window
+    that never joined the variant it was supposed to.
+    """
+    if not name:
+        return []
+    out = []
+    for token in _BRACKETED.findall(name):
+        token = token.strip()
+        category, variant = sidecar.split_assembly_key(token)
+        if variant is not None and category in sidecar.CATEGORIES:
+            out.append(token)
+    return out
+
+
+def _tag_for(elem: Element, category: str) -> str | None:
+    """The one assembly key `elem` declares for `category`, or None.
+
+    A property beats a name: it is written by tooling that knows the schema, while a
+    name is hand-typed. Keys naming other categories are ignored rather than an error —
+    a room legitimately carries several, and each lands on its own surfaces.
+    """
+    for key in _element_assembly_tags(elem) or _name_assembly_tags(elem.get("name")):
+        if sidecar.split_assembly_key(key)[0] == category:
+            return key
+    return None
 
 
 def _check_boundaries(wall_boundaries):

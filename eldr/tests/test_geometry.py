@@ -2,6 +2,7 @@ import textwrap
 import warnings
 import zipfile
 import pytest
+import defusedxml.ElementTree as DET
 from eldr import geometry
 from eldr.tests.fixtures import MULTI_LEVEL_FIXTURE
 
@@ -906,3 +907,64 @@ def test_below_void_outdoor_reaches_exposed_floor_on_a_lone_conditioned_storey(t
     # and the undrawn area is reported as the schematic gap it is, in ITS category
     assert env.voids["Living room"].category == "exposed_floor"
     assert env.voids["Living room"].area_ft2 == pytest.approx(foot, rel=0.02)
+
+
+# --- reading assembly tags out of Home.xml --------------------------------------------
+#
+# Two sources, because Sweet Home 3D's UI can edit a furniture NAME but has no editor for
+# custom properties at all, and walls have no name to edit. So walls are tagged by a tool
+# writing `<property>`, while windows, doors and rooms can also be tagged by hand in the
+# app. Neither reader validates against the side-car — that is the load path's job, which
+# keeps parsing independent of what happens to be declared.
+
+
+def _elem(xml):
+    return DET.fromstring(xml)
+
+
+def test_property_tag_read():
+    e = _elem("<wall><property name='eldr.assembly' value='exterior_wall/r0'/></wall>")
+    assert geometry._element_assembly_tags(e) == ["exterior_wall/r0"]
+
+
+def test_property_tag_whitespace_separated_list():
+    """One object can produce surfaces in several categories — a room has both a
+    ceiling and a floor — so the value is a list, disambiguated by each key's own
+    category rather than by needing a property name per category."""
+    e = _elem("<room><property name='eldr.assembly' "
+              "value='ceiling/r19  buffer_floor/none'/></room>")
+    assert geometry._element_assembly_tags(e) == ["ceiling/r19", "buffer_floor/none"]
+
+
+def test_unrelated_property_ignored():
+    e = _elem("<wall><property name='com.eteks.sweethome3d.SweetHome3D.FrameX' "
+              "value='25'/></wall>")
+    assert geometry._element_assembly_tags(e) == []
+
+
+def test_element_with_no_properties_has_no_tags():
+    assert geometry._element_assembly_tags(_elem("<wall/>")) == []
+
+
+def test_bracketed_name_tag():
+    assert geometry._name_assembly_tags("Bedroom window [window/single]") == ["window/single"]
+
+
+def test_bracketed_token_without_slash_is_not_a_tag():
+    """This is what makes the convention safe to overlay on free-form names: an
+    ordinary bracketed note is invisible here, so nobody's existing naming breaks."""
+    assert geometry._name_assembly_tags("Window [kitchen]") == []
+
+
+def test_bracketed_token_with_unknown_category_is_not_a_tag():
+    assert geometry._name_assembly_tags("Window [wibble/single]") == []
+
+
+def test_bracketed_tag_among_other_text_and_brackets():
+    assert geometry._name_assembly_tags(
+        "Sash [old] window [window/single] [note]") == ["window/single"]
+
+
+def test_no_name_is_no_tag():
+    assert geometry._name_assembly_tags(None) == []
+    assert geometry._name_assembly_tags("") == []
