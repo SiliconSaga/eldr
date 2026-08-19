@@ -518,3 +518,54 @@ def test_levels_accepts_an_ordinary_void_name(tmp_path):
     sc = _write_and_load(tmp_path, BASE_SIDECAR
                          + "\n    levels:\n      Main:\n        above_void: vaulted\n")
     assert sc.levels["Main"].above_void == "vaulted"
+
+
+# --- assembly key grammar -------------------------------------------------------------
+#
+# An assembly key is either a bare category (`exterior_wall`) or a category with a named
+# variant (`exterior_wall/r0`). The category is always the text before the first slash,
+# which is what lets one key say both "what kind of surface" and "which of this house's
+# several assemblies of that kind" without a second field.
+
+
+def test_split_assembly_key_plain_category():
+    assert sidecar.split_assembly_key("exterior_wall") == ("exterior_wall", None)
+
+
+def test_split_assembly_key_variant():
+    assert sidecar.split_assembly_key("exterior_wall/r0") == ("exterior_wall", "r0")
+
+
+def test_split_assembly_key_splits_on_first_slash_only():
+    """A variant name may itself contain slashes; only the first one delimits."""
+    assert sidecar.split_assembly_key("window/low-e/2a") == ("window", "low-e/2a")
+
+
+def test_split_assembly_key_empty_variant_is_a_variant():
+    """`window/` is malformed rather than a bare category — it must not read as one,
+    or a trailing slash would silently collapse a typo into the category default."""
+    assert sidecar.split_assembly_key("window/") == ("window", "")
+
+
+def test_variant_with_unknown_category_prefix_is_rejected(tmp_path):
+    with pytest.raises(ValueError, match="unknown category"):
+        _write_and_load(tmp_path, BASE_SIDECAR + "\n      windwo/single: 0.9\n")
+
+
+def test_known_category_variant_loads(tmp_path):
+    sc = _write_and_load(tmp_path, BASE_SIDECAR + "\n      exterior_wall/r0: 0.24\n")
+    assert sc.assemblies["exterior_wall/r0"] == 0.24
+    assert sc.assemblies["exterior_wall"] == 0.09
+
+
+def test_bare_unknown_key_still_allowed(tmp_path):
+    """Only VARIANT keys are validated against the category list. A bare unknown key
+    has always been accepted and ignored, and tightening that is a separate decision —
+    it would break every side-car carrying a note-to-self key."""
+    sc = _write_and_load(tmp_path, BASE_SIDECAR + "\n      some_future_category: 0.2\n")
+    assert sc.assemblies["some_future_category"] == 0.2
+
+
+def test_variant_u_value_is_validated_like_any_other(tmp_path):
+    with pytest.raises(ValueError, match="U-value must be >= 0"):
+        _write_and_load(tmp_path, BASE_SIDECAR + "\n      exterior_wall/r0: -0.1\n")

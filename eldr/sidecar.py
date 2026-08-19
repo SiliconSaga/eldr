@@ -18,6 +18,29 @@ WALL_BOUNDARIES = frozenset({"exterior", "ground", "buffer", "interior"})
 # simply becomes a named space; how it is treated thermally is decided in `spaces:`.
 LEVEL_ROLES = frozenset({"conditioned", "unconditioned", "ignore"})
 
+# Every surface category the engine can produce. A variant assembly key must name one of
+# these before its slash — that check is the whole validation story for variants, and it
+# is why a typo like `windwo/single` fails at load instead of silently never matching.
+CATEGORIES = frozenset({
+    "exterior_wall", "basement_wall", "window", "door",
+    "ceiling", "floor", "buffer_wall", "buffer_floor", "exposed_floor",
+})
+
+
+def split_assembly_key(key: str) -> tuple[str, str | None]:
+    """`(category, variant)` for an assembly key; variant is None for a bare category.
+
+    Splits on the FIRST slash only, so a variant name may itself contain slashes.
+
+    Use this for EVERY assembly-key comparison. Never substring-match one:
+    `exterior_wall/r0` contains `exterior_wall`, so an `in` test or a `startswith`
+    silently conflates a variant with its category default — structurally the same trap
+    as `"floor"` matching inside `"buffer_floor"`, which cost the level-stack work
+    several rounds. Compare the returned parts exactly.
+    """
+    category, sep, variant = key.partition("/")
+    return (category, variant if sep else None)
+
 
 @dataclass(frozen=True)
 class LevelSpec:
@@ -286,6 +309,18 @@ def _validate(sc: SideCar) -> None:
     for name, u in sc.assemblies.items():
         if u < 0:
             raise ValueError(f"assemblies.{name}: U-value must be >= 0")
+    # Variant keys are validated against the category list; bare keys are not. An
+    # unrecognised BARE key has always been accepted and ignored (side-cars carry
+    # note-to-self entries), and tightening that is a separate decision. A variant is
+    # different: it exists only to be pointed at by a tag, and a variant whose category
+    # is misspelled can never match any surface, so it would fail silently forever.
+    for name in sc.assemblies:
+        category, variant = split_assembly_key(name)
+        if variant is not None and category not in CATEGORIES:
+            raise ValueError(
+                f"assemblies.{name}: unknown category '{category}' — a variant key is "
+                f"'<category>/<name>' and the category must be one of "
+                f"{sorted(CATEGORIES)}")
     if sc.existing_tons is not None:
         if not math.isfinite(sc.existing_tons) or sc.existing_tons <= 0:
             raise ValueError(
