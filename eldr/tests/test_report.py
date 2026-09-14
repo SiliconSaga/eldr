@@ -132,6 +132,43 @@ def test_render_per_room_section():
     assert "220 CFM" in md               # whole-house cfm from the HeatingResult, in the gap note
 
 
+def _plan_with(room_cfms):
+    """A plan whose conditioned rooms carry exactly `room_cfms`."""
+    room_loads = [loads.RoomLoad(f"Room {i}", "L1", True, 1000.0, 400.0, c)
+                  for i, c in enumerate(room_cfms)]
+    return ductmodel.DuctPlan(
+        unit=None, unit_name="air handler", friction_rate=0.08, derived=False,
+        available_static_pressure=None, worst_length_ft=None,
+        room_loads=room_loads, runs=[("main trunk", sum(room_cfms))], lengths=None)
+
+
+def test_per_room_note_reports_a_shortfall_as_undrawn_space():
+    """The gap that genuinely means geometry is missing: rooms sum below the house."""
+    md = report.render_heating(_result(), _sc(), duct_plan=_plan_with([100.0, 50.0]))
+    assert "the shortfall is space not carried here" in md
+    assert "Draw more rooms" in md
+
+
+def test_per_room_note_does_not_call_an_overage_undrawn_space():
+    """Each room takes the larger of its own heating and cooling airflow, and the two
+    peak in different rooms — so per-room maxima can exceed the whole-house maximum.
+    Reporting that as missing geometry sends the reader looking for rooms that are
+    already drawn."""
+    md = report.render_heating(_result(), _sc(), duct_plan=_plan_with([200.0, 150.0]))
+    assert "above* the whole-house" in md
+    assert "expected rather than an" in md
+    assert "Draw more rooms" not in md
+
+
+def test_per_room_note_states_the_rounding_rule_when_the_column_differs():
+    """Rows are rounded before summing so the column adds up on the page; the
+    whole-house figure rounds once. Where that leaves a 1-CFM difference, say why
+    rather than leave it looking like an arithmetic slip."""
+    md = report.render_heating(_result(), _sc(), duct_plan=_plan_with([110.4, 109.4]))
+    assert "with nothing left over" in md or "below the" in md
+    assert "rounded" in md
+
+
 def test_render_manual_d_without_unit_notes_absence():
     dr = ductd.size_ducts([("main trunk", 120), ("Big Room", 111)], friction_rate=0.08)
     md = report.render_heating(_result(), _sc(), ducts=dr, duct_plan=_plan())

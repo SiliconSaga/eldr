@@ -1,5 +1,7 @@
 # Per-surface assemblies — implementation plan
 
+> **This plan has been executed.** It is kept as the record of how the work was decomposed and which mutation checks were specified, not as a live tracker — **the unchecked boxes below are the plan as written, not work outstanding.** Tasks 1–8 shipped in this repository; the `tag.py` writer (Task 9) shipped in the Yggdrasil workspace, and the model tagging and documentation tasks against the Refr Hus hoard are tracked there.
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Let an individual wall, room, window or door declare which assembly it is, so per-room loads stop assuming one U-value per category house-wide.
@@ -8,7 +10,7 @@
 
 **Tech Stack:** Python 3.11+, stdlib + `pyyaml` + `defusedxml`. Tests are pytest via `ws test eldr`. The tagging tool is bash + python in the realm sh3d tooling.
 
-**Spec:** `components/eldr/docs/2026-08-18-per-surface-assemblies-design.md`
+**Spec:** [`2026-08-18-per-surface-assemblies-design.md`](2026-08-18-per-surface-assemblies-design.md) — beside this file. (An earlier `components/eldr/…` path resolved only from the Yggdrasil workspace root, not from a checkout of this repository.)
 
 ## Global Constraints
 

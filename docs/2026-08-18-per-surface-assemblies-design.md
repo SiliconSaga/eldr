@@ -1,7 +1,7 @@
 # Per-surface assemblies — design
 
 **Date:** 2026-08-18
-**Status:** approved, not yet implemented
+**Status:** implemented — the engine, reporting and JSON export described below ship in this repository. Two items in *Deferred* remain deferred, and the `tag.py` writer lives in the Yggdrasil workspace rather than here (see the README).
 **Predecessor:** `2026-08-13-level-stack-model-design.md`
 
 ## Why

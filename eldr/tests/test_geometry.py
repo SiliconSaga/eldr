@@ -1019,6 +1019,45 @@ def test_untagged_model_produces_no_assemblies(tmp_path):
     assert all(s.assembly is None for s in env.surfaces)
 
 
+def test_wall_tagged_with_a_window_assembly_warns(tmp_path):
+    """A wall can never emit a `window` surface, so `window/single` on one is dead
+    text. Without a warning it reads as success while the wall silently takes its
+    category default — the exact failure the coverage report exists to catch, one
+    level earlier."""
+    p = tmp_path / "Home.xml"
+    p.write_text(FIXTURE.replace(
+        "<wall id='w-n' level='L1' xStart='0' yStart='0' xEnd='1000' yEnd='0' "
+        "height='300' thickness='10'/>",
+        "<wall id='w-n' level='L1' xStart='0' yStart='0' xEnd='1000' yEnd='0' "
+        "height='300' thickness='10'>"
+        "<property name='eldr.assembly' value='window/single'/></wall>",
+    ))
+    with pytest.warns(UserWarning, match="cannot produce"):
+        env = geometry.extract_envelope(str(p))
+    # and the wall still falls back cleanly rather than carrying the bogus tag
+    assert all(s.assembly is None for s in env.surfaces if s.category == "exterior_wall")
+
+
+def test_room_ceiling_and_floor_tags_do_not_warn_about_each_other(tmp_path):
+    """The counter-case that stops the warning above from being noise. A room emits
+    both a ceiling and a floor, so resolving one while the other's tag sits unused is
+    ordinary — warning there would fire on every correctly tagged room."""
+    p = tmp_path / "Home.xml"
+    p.write_text(FIXTURE.replace(
+        "<room id='r1' level='L1'",
+        "<room id='r1' level='L1' ",
+    ).replace(
+        "<room id='r1' level='L1' ",
+        "<room id='r1' level='L1' ", 1))
+    # Tag the room with both categories it can emit.
+    text = p.read_text().replace("</room>", "<property name='eldr.assembly' "
+                                            "value='ceiling/r19 floor/slab'/></room>", 1)
+    p.write_text(text)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        geometry.extract_envelope(str(p))
+
+
 # --- tags reaching PER-ROOM surfaces --------------------------------------------------
 #
 # Per-room surfaces aggregate: one `Surface("window", total)` used to cover every window
@@ -1066,6 +1105,31 @@ def test_room_walls_split_by_assembly(tmp_path):
     got = _assemblies_in(_room(env, "Living room"), "exterior_wall")
     assert "exterior_wall/r0" in got
     assert None in got          # the other three Main walls are untagged
+
+
+def test_openings_net_off_their_own_host_wall(tmp_path):
+    """Both windows sit on `m-s` (y=300); the tagged wall `m-n` (y=0) has none.
+
+    Netting the room's openings off whichever bucket iterates first moves glazing area
+    out of the tagged assembly and into nothing — the r0 wall shrinks by 21.5 ft² it
+    does not contain, and the per-room U-value split is wrong in exactly the dimension
+    this feature exists to get right. `m-n` is 400x250 cm, so it must keep its full
+    107.6 ft² whatever order the buckets are walked in.
+    """
+    p = tmp_path / "Home.xml"
+    p.write_text(ROOM_TAGGED_FIXTURE)
+    env = geometry.extract_envelope(str(p))
+    room = _room(env, "Living room")
+    r0 = [s for s in room.surfaces
+          if s.category == "exterior_wall" and s.assembly == "exterior_wall/r0"]
+    assert len(r0) == 1
+    assert r0[0].area_ft2 == pytest.approx(107.6, abs=0.5)
+
+    # And the room-level invariant still holds: gross wall minus openings, unchanged
+    # by where the subtraction landed.
+    walls = sum(s.area_ft2 for s in room.surfaces if s.category == "exterior_wall")
+    glazing = sum(s.area_ft2 for s in room.surfaces if s.category == "window")
+    assert walls + glazing == pytest.approx(107.6 * 2 + 80.7 * 2, abs=1.0)
 
 
 def test_room_property_tags_its_ceiling(tmp_path):

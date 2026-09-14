@@ -77,17 +77,63 @@ def _name_assembly_tags(name: str | None) -> list[str]:
     return out
 
 
-def _tag_for(elem: Element, category: str) -> str | None:
+# Which assembly categories each kind of element can ever produce. A tag naming a
+# category outside its own set can never land on a surface, so it is a mistake the
+# modeller wants told about — as opposed to a room's ceiling tag being passed over
+# while its floor is resolved, which is ordinary and must stay silent.
+EMITTABLE: dict[str, frozenset[str]] = {
+    "wall": frozenset({"exterior_wall", "basement_wall", "buffer_wall"}),
+    "room": frozenset({"ceiling", "floor", "buffer_floor", "exposed_floor"}),
+    "opening": frozenset({"window", "door"}),
+}
+
+# (element kind, element label, key) for every tag that named a category the element
+# cannot emit. Collected during extraction and reported once, the way the unknown
+# wall-id and unbound-space warnings are.
+_stray_tags: list[tuple[str, str, str]] = []
+
+
+def _tag_for(elem: Element, category: str, kind: str | None = None) -> str | None:
     """The one assembly key `elem` declares for `category`, or None.
 
     A property beats a name: it is written by tooling that knows the schema, while a
-    name is hand-typed. Keys naming other categories are ignored rather than an error —
-    a room legitimately carries several, and each lands on its own surfaces.
+    name is hand-typed. Keys naming *other* categories the element can still emit are
+    passed over silently — a room legitimately carries a ceiling tag and a floor tag,
+    and each lands on its own surfaces.
+
+    A key naming a category the element can NEVER emit is different: `window/single` on
+    a wall will never be read by anything. Those are recorded for a single warning, so
+    a mistagged object shows up as a warning rather than as a surface that quietly took
+    its category default.
     """
+    emittable = EMITTABLE.get(kind or "", None)
+    found = None
     for key in _element_assembly_tags(elem) or _name_assembly_tags(elem.get("name")):
-        if sidecar.split_assembly_key(key)[0] == category:
-            return key
-    return None
+        key_category = sidecar.split_assembly_key(key)[0]
+        if key_category == category:
+            if found is None:
+                found = key
+        elif emittable is not None and key_category not in emittable:
+            label = elem.get("name") or elem.get("id") or "?"
+            entry = (kind or "?", label, key)
+            if entry not in _stray_tags:
+                _stray_tags.append(entry)
+    return found
+
+
+def _warn_stray_tags() -> None:
+    """Report assembly tags that named a category their object cannot produce."""
+    if not _stray_tags:
+        return
+    shown = ", ".join(f"{kind} '{label}' → `{key}`" for kind, label, key in _stray_tags[:8])
+    more = f" (+{len(_stray_tags) - 8} more)" if len(_stray_tags) > 8 else ""
+    warnings.warn(
+        f"{len(_stray_tags)} assembly tag(s) name a category the tagged object cannot "
+        f"produce, so they were ignored and the object used its category default: "
+        f"{shown}{more}. A wall cannot carry `window/…`, a window cannot carry "
+        f"`ceiling/…`; check for a mistagged object or a typo'd category.",
+        stacklevel=2)
+    _stray_tags.clear()
 
 
 def _check_boundaries(wall_boundaries):
@@ -461,16 +507,25 @@ def _parse_rooms(root, levels_xml, level_specs=None):
 CATEGORY_FOR_BELOW = {"ground": "floor", "outdoor": "exposed_floor"}
 
 
-def _tags_by_category(keys) -> dict[str, str]:
+def _tags_by_category(keys, kind: str | None = None, label: str = "?") -> dict[str, str]:
     """{category: assembly key} from a list of keys, first win per category.
 
     One object declares several keys because it produces surfaces in several categories
     — a room has both a ceiling and a floor. Splitting them by their own category is what
     lets a single property carry both without a property name per category.
+
+    A key naming a category this kind of object can never emit is recorded for
+    `_warn_stray_tags`, since it will never be read by anything.
     """
+    emittable = EMITTABLE.get(kind or "", None)
     out: dict[str, str] = {}
     for key in keys:
         category = sidecar.split_assembly_key(key)[0]
+        if emittable is not None and category not in emittable:
+            entry = (kind or "?", label, key)
+            if entry not in _stray_tags:
+                _stray_tags.append(entry)
+            continue
         out.setdefault(category, key)
     return out
 
@@ -597,7 +652,11 @@ def extract_envelope(home_path: str, wall_boundaries: dict[str, str] | None = No
     # always did.
     room_gross_wall: dict[str, dict[tuple[str, str | None], float]] = {
         rid: {} for rid in room_by_id}                                               # ft^2
-    room_openings: dict[str, float] = {rid: 0.0 for rid in room_by_id}               # ft^2 total
+    # Keyed by the HOST wall's (category, assembly), not just by room: netting an
+    # opening off whichever bucket happens to come first moves area between
+    # assemblies, which is exactly the split this feature exists to get right.
+    room_openings: dict[str, dict[tuple[str, str | None], float]] = {
+        rid: {} for rid in room_by_id}                                            # ft^2
     room_doors: dict[str, dict[str | None, float]] = {rid: {} for rid in room_by_id}  # ft^2
     room_windows: dict[str, dict[float, float]] = {rid: {} for rid in room_by_id}    # ft^2 by bearing
     # Windows carry two independent splits: BEARING drives solar gain and ASSEMBLY drives
@@ -670,7 +729,7 @@ def extract_envelope(home_path: str, wall_boundaries: dict[str, str] | None = No
             # Read the tag against the category the boundary resolution just produced,
             # so a wall tagged `exterior_wall/r0` that turns out to be below grade is
             # simply untagged for `basement_wall` rather than mis-priced.
-            wall_assembly[w.get("id")] = _tag_for(w, cat)
+            wall_assembly[w.get("id")] = _tag_for(w, cat, kind="wall")
             # Split the wall's gross area among the conditioned rooms it runs behind:
             # sample along it, assign each point to the nearest conditioned room. A
             # facade shared by several rooms is divided; a corner-to-corner wall lands
@@ -761,7 +820,7 @@ def extract_envelope(home_path: str, wall_boundaries: dict[str, str] | None = No
         label = (dw.get("catalogId", "") + " "
                  + _BRACKETED.sub(" ", dw.get("name") or "")).lower()
         category = "window" if "window" in label else "door"
-        assembly = _tag_for(dw, category)
+        assembly = _tag_for(dw, category, kind="opening")
         surfaces.append(Surface(category, area_ft2, assembly=assembly))
         wall_area_cm2[host] = max(0.0, wall_area_cm2[host] - area_cm2)
         # Attribute the opening to the nearest room on its level, by its own position.
@@ -771,7 +830,8 @@ def extract_envelope(home_path: str, wall_boundaries: dict[str, str] | None = No
             dx, dy = _f(dw, "x"), _f(dw, "y")
             rid = min(rooms_here,
                       key=lambda r: _dist_point_to_polygon_cm(dx, dy, r["points"]))["id"]
-            room_openings[rid] += area_ft2
+            hkey = (wall_category[host], wall_assembly.get(host))
+            room_openings[rid][hkey] = room_openings[rid].get(hkey, 0.0) + area_ft2
             if category == "door":
                 room_doors[rid][assembly] = room_doors[rid].get(assembly, 0.0) + area_ft2
             else:
@@ -830,17 +890,21 @@ def extract_envelope(home_path: str, wall_boundaries: dict[str, str] | None = No
     for rid, rm in room_by_id.items():
         lid = rm["level_id"]
         surfs: list[Surface] = []
-        openings = room_openings[rid]
-        # Netting is UNCHANGED by tagging: openings still come off the gross wall in
-        # iteration order with the leftover spilling forward. The only difference is that
-        # the buckets are now (category, assembly) instead of category, so an untagged
-        # model walks exactly the same sequence it always did. Changing the netting rule
-        # in the same commit as the re-keying would make any regression unattributable.
+        # Each opening comes off the bucket its host wall belongs to. Anything left
+        # over — an opening larger than its own host's gross area, or one whose host
+        # could not be resolved — spills forward in iteration order, which is what the
+        # whole-room netting used to do for everything.
+        per_bucket = dict(room_openings[rid])
+        spill = 0.0
         for (scat, sasm), gross in room_gross_wall[rid].items():
-            net = max(0.0, gross - openings)
-            openings = max(0.0, openings - gross)   # spill leftover to the next bucket
+            mine = per_bucket.pop((scat, sasm), 0.0) + spill
+            net = max(0.0, gross - mine)
+            spill = max(0.0, mine - gross)
             if net > 0.0:
                 surfs.append(Surface(scat, net, assembly=sasm))
+        # Openings whose host bucket produced no gross wall at all (an interior host,
+        # or a wall netted to nothing) would otherwise vanish; they are already counted
+        # as window/door surfaces, so nothing more is owed here.
         for wasm, warea in room_window_assembly[rid].items():
             if warea > 0.0:
                 surfs.append(Surface("window", warea, assembly=wasm))
@@ -852,8 +916,10 @@ def extract_envelope(home_path: str, wall_boundaries: dict[str, str] | None = No
         # per-room legacy fallback here — the bounding-box path above runs only when the
         # model parsed no rooms AT ALL, and this loop does not execute in that case.
         if rid in faces:
-            horizontals = _horizontal_surfaces(faces[rid],
-                                               _tags_by_category(rm["assembly_tags"]))
+            horizontals = _horizontal_surfaces(
+                faces[rid],
+                _tags_by_category(rm["assembly_tags"], kind="room",
+                                  label=rm.get("name") or "?"))
             surfs.extend(horizontals)
             surfaces.extend(horizontals)
             if faces[rid].void_below_ft2 > 0.0:
@@ -877,6 +943,9 @@ def extract_envelope(home_path: str, wall_boundaries: dict[str, str] | None = No
         if f.get("x") is not None and f.get("y") is not None
     ]
     level_elevations = {lid: float(lv.get("elevation") or 0.0) for lid, lv in levels_xml.items()}
+
+    # Every tag has now been resolved against a real surface or found homeless.
+    _warn_stray_tags()
 
     return Envelope(surfaces=surfaces, volume_ft3=volume_ft3,
                     windows_by_bearing=windows_by_bearing,

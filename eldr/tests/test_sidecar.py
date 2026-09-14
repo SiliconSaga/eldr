@@ -552,6 +552,15 @@ def test_variant_with_unknown_category_prefix_is_rejected(tmp_path):
         _write_and_load(tmp_path, BASE_SIDECAR + "\n      windwo/single: 0.9\n")
 
 
+def test_empty_variant_is_rejected(tmp_path):
+    """`window/` names a real category with an empty variant, so the unknown-category
+    check passes it — and then it behaves as the bare category everywhere downstream,
+    including the coverage table, where it would be shown as the untagged default.
+    A trailing slash is a typo and must not masquerade as the default."""
+    with pytest.raises(ValueError, match="empty variant"):
+        _write_and_load(tmp_path, BASE_SIDECAR + "\n      window/: 0.9\n")
+
+
 def test_known_category_variant_loads(tmp_path):
     sc = _write_and_load(tmp_path, BASE_SIDECAR + "\n      exterior_wall/r0: 0.24\n")
     assert sc.assemblies["exterior_wall/r0"] == 0.24

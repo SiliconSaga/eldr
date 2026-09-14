@@ -59,7 +59,12 @@ def render_heating(result: loads.HeatingResult, sc: sidecar.SideCar,
     if sizing is not None:
         lines += _manual_s_section(sizing)
     if duct_plan is not None:
-        lines += _per_room_section(duct_plan, result.cfm)
+        # Each room's design CFM is the larger of its heating and cooling airflow,
+        # so the whole-house figure it gets compared against has to be the larger
+        # of the two as well. Passing heating alone compares different quantities
+        # and lets a cooling-dominant house look like it has undrawn rooms.
+        design_cfm = max(result.cfm, cooling.cfm) if cooling is not None else result.cfm
+        lines += _per_room_section(duct_plan, design_cfm)
     if ducts is not None:
         lines += _duct_section(ducts, duct_plan)
     return "\n".join(lines)
@@ -467,25 +472,50 @@ def _per_room_section(plan: ductmodel_mod.DuctPlan, whole_house_cfm: float) -> l
     shown_cfm = sum(round(rl.cfm) for rl in served)
     lines.append(f"| **{len(served)} rooms** | | | **{shown_cfm:,.0f}** |")
 
+    # Conditioned rooms that exist but fall under the run threshold. They are real
+    # space, so the "nothing left over" claim must not be made while any survive.
+    below_threshold = [rl for rl in plan.room_loads
+                       if rl.conditioned and rl.cfm < ductmodel_mod.MIN_RUN_CFM]
+
     note = (
         "_Each room's load is from the exterior walls, windows, doors and ceiling/floor "
         "attributed to it, plus infiltration on its own volume; design CFM is the larger "
         "of heating/cooling airflow. "
     )
     gap = whole_house_cfm - room_cfm
-    if abs(gap) >= 1:
+    if gap >= 1:
         note += (
             f"Served rooms sum to **{shown_cfm:,.0f} CFM** against the whole-house "
-            f"**{whole_house_cfm:,.0f} CFM** — the gap is space not carried here: floor "
-            f"area not yet drawn as rooms (halls, stairs, unfinished), plus tiny rooms "
-            f"below the {ductmodel_mod.MIN_RUN_CFM:.0f}-CFM run threshold. Draw more "
-            f"rooms and it closes._"
+            f"**{whole_house_cfm:,.0f} CFM** — the shortfall is space not carried here: "
+            f"floor area not yet drawn as rooms (halls, stairs, unfinished), plus "
+            f"{len(below_threshold)} conditioned room(s) below the "
+            f"{ductmodel_mod.MIN_RUN_CFM:.0f}-CFM run threshold. Draw more rooms and it "
+            f"closes._"
+        )
+    elif gap <= -1:
+        # Not an error, and not undrawn space: each room takes the larger of its own
+        # heating and cooling airflow, and the two peak in different rooms. Summing
+        # per-room maxima therefore exceeds the whole-house maximum by construction.
+        note += (
+            f"Served rooms sum to **{shown_cfm:,.0f} CFM**, *above* the whole-house "
+            f"**{whole_house_cfm:,.0f} CFM**. That is expected rather than an "
+            f"inconsistency: each room takes the larger of its own heating and cooling "
+            f"airflow, and those do not peak in the same rooms, so per-room maxima add "
+            f"up to more than the whole-house maximum. Size equipment on the whole-house "
+            f"figure and branches on the room figures._"
         )
     else:
         note += (
-            f"Served rooms account for the whole-house **{whole_house_cfm:,.0f} CFM** "
-            f"with nothing left over, so every conditioned space is drawn as a room."
+            f"Served rooms account for the whole-house **{whole_house_cfm:,.0f} CFM**"
         )
+        if below_threshold:
+            note += (
+                f", leaving only {len(below_threshold)} conditioned room(s) below the "
+                f"{ductmodel_mod.MIN_RUN_CFM:.0f}-CFM run threshold"
+            )
+        else:
+            note += " with nothing left over, so every conditioned space is drawn as a room"
+        note += "."
         # The column totals the rounded rows so it adds up on the page; the
         # whole-house figure rounds once, at the end. Say so rather than leave
         # a 1-CFM difference looking like an arithmetic slip.

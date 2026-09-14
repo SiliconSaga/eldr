@@ -321,6 +321,14 @@ def _validate(sc: SideCar) -> None:
                 f"assemblies.{name}: unknown category '{category}' — a variant key is "
                 f"'<category>/<name>' and the category must be one of "
                 f"{sorted(CATEGORIES)}")
+        # A trailing slash parses as a real category with an empty variant, so it passes
+        # the check above and then behaves as the bare category everywhere downstream —
+        # including the coverage table, where it would be presented as the untagged
+        # default. Reject it here rather than let it masquerade.
+        if variant is not None and not variant.strip():
+            raise ValueError(
+                f"assemblies.{name}: empty variant — write the bare category "
+                f"'{category}' for the default, or give the variant a name")
     if sc.existing_tons is not None:
         if not math.isfinite(sc.existing_tons) or sc.existing_tons <= 0:
             raise ValueError(
