@@ -461,16 +461,42 @@ def _per_room_section(plan: ductmodel_mod.DuctPlan, whole_house_cfm: float) -> l
     for rl in served:
         lines.append(f"| {rl.name} | {rl.heating_btuh:,.0f} | {rl.cooling_btuh:,.0f} "
                      f"| {rl.cfm:,.0f} |")
-    lines.append(f"| **{len(served)} rooms** | | | **{room_cfm:,.0f}** |")
-    lines += [
-        "",
-        f"_Each room's load is from the exterior walls, windows, doors and ceiling/floor "
-        f"attributed to it, plus infiltration on its own volume; design CFM is the larger "
-        f"of heating/cooling airflow. Served rooms sum to **{room_cfm:,.0f} CFM** vs the "
-        f"whole-house **{whole_house_cfm:,.0f} CFM** — the gap is space not carried here: "
-        f"floor area not yet drawn as rooms (halls, stairs, unfinished), plus tiny rooms "
-        f"below the {ductmodel_mod.MIN_RUN_CFM:.0f}-CFM run threshold. Draw more rooms and it closes._",
-    ]
+    # Total the values as DISPLAYED, so the column visibly adds up. Summing the
+    # unrounded figures instead leaves a total that disagrees with its own rows
+    # by a few CFM and reads as an arithmetic error.
+    shown_cfm = sum(round(rl.cfm) for rl in served)
+    lines.append(f"| **{len(served)} rooms** | | | **{shown_cfm:,.0f}** |")
+
+    note = (
+        "_Each room's load is from the exterior walls, windows, doors and ceiling/floor "
+        "attributed to it, plus infiltration on its own volume; design CFM is the larger "
+        "of heating/cooling airflow. "
+    )
+    gap = whole_house_cfm - room_cfm
+    if abs(gap) >= 1:
+        note += (
+            f"Served rooms sum to **{shown_cfm:,.0f} CFM** against the whole-house "
+            f"**{whole_house_cfm:,.0f} CFM** — the gap is space not carried here: floor "
+            f"area not yet drawn as rooms (halls, stairs, unfinished), plus tiny rooms "
+            f"below the {ductmodel_mod.MIN_RUN_CFM:.0f}-CFM run threshold. Draw more "
+            f"rooms and it closes._"
+        )
+    else:
+        note += (
+            f"Served rooms account for the whole-house **{whole_house_cfm:,.0f} CFM** "
+            f"with nothing left over, so every conditioned space is drawn as a room."
+        )
+        # The column totals the rounded rows so it adds up on the page; the
+        # whole-house figure rounds once, at the end. Say so rather than leave
+        # a 1-CFM difference looking like an arithmetic slip.
+        if round(shown_cfm) != round(whole_house_cfm):
+            note += (
+                f" The column totals **{shown_cfm:,.0f}** because each row is rounded "
+                f"before summing, while the whole-house figure rounds once at the end._"
+            )
+        else:
+            note += "_"
+    lines += ["", note]
     return lines
 
 
@@ -515,6 +541,12 @@ def _duct_section(dr: ductd_mod.DuctResult,
             lines.append(f"| {r.name} | {r.cfm:,.0f} | {r.exact_dia_in:.1f}″ | "
                          f"**{r.standard_dia_in}″** | {r.velocity_fpm:,.0f} fpm{flag} |")
     lines += [
+        "",
+        "_**Analysis, not a duct schedule.** These sizes come from each room's own load "
+        "with no trunk hierarchy, no reducing runs and no installed layout — they answer "
+        "\"how big would a dedicated duct to this room have to be\", which is a useful "
+        "cross-check and not a thing anyone builds. Where a project keeps a hand-authored "
+        "register schedule, that schedule is the authority for what gets installed._",
         "",
         "_Round duct, equal-friction, demo-grade. Total effective length uses a fitting "
         "fudge factor, not true fitting equivalent lengths; a full Manual D adds those and "
