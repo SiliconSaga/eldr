@@ -32,15 +32,37 @@ cd components/eldr
 
 It prints a Markdown report (heating table, cooling table, Manual S sizing, per-room loads, and Manual D duct sizing). The demo loop is: **edit the house in SH3D → save → re-run** and watch the numbers move.
 
-Three other output modes:
+Four other output modes:
 
 ```bash
 .venv/bin/python -m eldr.cli MODEL --walls                 # list walls + boundaries, to hand-tag
 .venv/bin/python -m eldr.cli MODEL SIDECAR --overview      # full narrative "demo overview" doc
 .venv/bin/python -m eldr.cli MODEL SIDECAR --json          # the whole analysis as structured JSON
+.venv/bin/python -m eldr.cli --diff BEFORE.json AFTER.json # what changed between two runs
 ```
 
 `--overview` renders the same numbers as the report, wrapped in a deterministic narrative (ACCA-chain intro, honesty caveats auto-selected from the model, roadmap) — so the demo write-up never drifts from the engine. `--json` emits the same computation as machine-readable data (design, loads by category, Manual S, every room, every duct run, plus `levels`, `spaces`, `voids` and `surfaces` — the level stack and the horizontal split, so a consumer never has to re-derive them) — for a UI, a spreadsheet, or grounding an "ask the house" chatbot in exact values. The output modes are mutually exclusive.
+
+### `--diff`
+
+Takes two `--json` runs and prints Markdown describing what moved. Built for a pull-request comment, but it answers the same question at a desk: *what did that edit actually do?*
+
+**It leads with the design conditions.** If the station or a design temperature changed, every component moves with it — and without that stated up front, a reader treats a dozen correlated rows as a dozen separate findings. Only after that does it table the components, the equipment sizing and the per-room airflow.
+
+**It reports what moved, not everything.** A component row must clear both an absolute and a relative threshold (50 BTU/hr, 2 CFM, 1%) — absolute alone floods the table on a large house, relative alone reports a rounding wobble as "+50%". Totals, tonnage and the sizing verdict always appear, because those are the numbers a decision hangs on.
+
+```
+⚠️ Design conditions changed. Every component below moves with them, so read
+the totals rather than hunting for a cause in each row.
+
+- Design station: New York, NY → Newark, NJ
+- Heating ΔT: 55.0 → 56.0
+
+| Component        |  Before |   After |    Δ |      |
+|------------------|--------:|--------:|-----:|-----:|
+| `exterior_wall`  |  10,564 |  10,756 | +192 | +1.8% |
+| **Total**        |  39,694 |  40,331 | +638 | +1.6% |
+```
 
 The four level-stack keys in the JSON:
 

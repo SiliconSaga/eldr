@@ -90,7 +90,10 @@ def main(argv=None):
     """CLI entry point: parse args and print the report (or the wall listing)."""
     ap = argparse.ArgumentParser(prog="eldr",
                                  description="Eldr Manual J — heating + cooling loads + ducts.")
-    ap.add_argument("home", help="path to a Sweet Home 3D Home.xml or a packed .sh3d")
+    # `home` is optional only because --diff takes two JSON files instead of a
+    # model; every other mode errors below if it is missing.
+    ap.add_argument("home", nargs="?",
+                    help="path to a Sweet Home 3D Home.xml or a packed .sh3d")
     ap.add_argument("sidecar", nargs="?", help="path to the Eldr side-car YAML (required for the report)")
     # the output modes are mutually exclusive — you get one document, not a mix.
     mode = ap.add_mutually_exclusive_group()
@@ -100,7 +103,21 @@ def main(argv=None):
                       help="render the full narrative demo overview instead of the terse report")
     mode.add_argument("--json", action="store_true", dest="as_json",
                       help="emit the analysis as structured JSON instead of the report")
+    mode.add_argument("--diff", nargs=2, metavar=("BEFORE", "AFTER"),
+                      help="compare two --json runs and print what changed, as Markdown")
     args = ap.parse_args(argv)
+    if args.diff:
+        import json
+        from eldr import diff as diff_mod
+        with open(args.diff[0], encoding="utf-8") as f:
+            before = json.load(f)
+        with open(args.diff[1], encoding="utf-8") as f:
+            after = json.load(f)
+        print(diff_mod.render_diff(before, after))
+        return
+    if args.home is None:
+        ap.error("a model is required — `eldr <home> <sidecar>`; use --diff to compare "
+                 "two existing --json runs instead")
     if args.walls:
         print(list_walls(args.home, args.sidecar))
         return
