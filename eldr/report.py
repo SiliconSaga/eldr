@@ -638,10 +638,12 @@ def _cooling_section(c: loads.CoolingResult, sc: sidecar.SideCar) -> list[str]:
         "to hold the dry-bulb setpoint. **Latent** is a separate quantity: moisture, from "
         "the occupants and from the humidity the infiltrating air carries in. That is why "
         "it has no component breakdown — no wall, window or roof contributes to it. "
-        "**Total** is simply the two added. Supply airflow is sized on **sensible** alone, "
-        "not on the total, which is why the CFM does not come off the bottom line: air "
-        "carries the sensible load by temperature difference, while the latent load leaves "
-        "as condensate at the coil rather than by moving more air._",
+        "**Total** is simply the two added — from the unrounded figures, before each row "
+        "is rounded for display, so the three printed numbers can be off by one against "
+        "each other without any of them being wrong. Supply airflow is sized on "
+        "**sensible** alone, not on the total, which is why the CFM does not come off the "
+        "bottom line: air carries the sensible load by temperature difference, while the "
+        "latent load leaves as condensate at the coil rather than by moving more air._",
         "",
         "_Solar reads each window's exact bearing (grouped for display by nearest "
         "8-point, e.g. `solar-SW`), from the model's compass `northDirection`._",
