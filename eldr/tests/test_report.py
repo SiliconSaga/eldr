@@ -160,6 +160,23 @@ def test_per_room_note_does_not_call_an_overage_undrawn_space():
     assert "Draw more rooms" not in md
 
 
+def test_per_room_note_states_the_airflow_of_the_sub_threshold_rooms():
+    """Counting them is not enough. Their airflow sits OUTSIDE the served sum, so a
+    reader who assumes it is a remainder within the whole-house figure has it backwards
+    — and where the two nearly cancel, as they do on a real house, nothing on the page
+    reveals the mistake."""
+    plan = ductmodel.DuctPlan(
+        unit=None, unit_name="air handler", friction_rate=0.08, derived=False,
+        available_static_pressure=None, worst_length_ft=None,
+        room_loads=[loads.RoomLoad("Big", "L1", True, 1000.0, 400.0, 220.0),
+                    loads.RoomLoad("Closet", "L1", True, 30.0, 10.0, 2.0),
+                    loads.RoomLoad("Chase", "L1", True, 20.0, 5.0, 1.0)],
+        runs=[("main trunk", 220.0)], lengths=None)
+    md = report.render_heating(_result(), _sc(), duct_plan=plan)
+    assert "3.0 CFM" in md                       # the omitted airflow, stated
+    assert "additional to the served sum" in md  # and which side of the total it sits on
+
+
 def test_per_room_note_states_the_rounding_rule_when_the_column_differs():
     """Rows are rounded before summing so the column adds up on the page; the
     whole-house figure rounds once. Where that leaves a 1-CFM difference, say why

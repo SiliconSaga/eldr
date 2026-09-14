@@ -478,9 +478,12 @@ def _per_room_section(plan: ductmodel_mod.DuctPlan, whole_house_cfm: float) -> l
     lines.append(f"| **{len(served)} rooms** | | | **{shown_cfm:,.0f}** |")
 
     # Conditioned rooms that exist but fall under the run threshold. They are real
-    # space, so the "nothing left over" claim must not be made while any survive.
+    # space carrying real airflow, so their total is stated rather than only counted:
+    # "N rooms omitted" invites the reader to assume the airflow went somewhere, when
+    # in fact it is served by transfer and sits OUTSIDE the served sum entirely.
     below_threshold = [rl for rl in plan.room_loads
                        if rl.conditioned and rl.cfm < ductmodel_mod.MIN_RUN_CFM]
+    below_cfm = sum(rl.cfm for rl in below_threshold)
 
     note = (
         "_Each room's load is from the exterior walls, windows, doors and ceiling/floor "
@@ -514,9 +517,20 @@ def _per_room_section(plan: ductmodel_mod.DuctPlan, whole_house_cfm: float) -> l
             f"Served rooms account for the whole-house **{whole_house_cfm:,.0f} CFM**"
         )
         if below_threshold:
+            # State the airflow, not just the count, and say where it sits relative to
+            # the whole-house figure. Otherwise a reader reasonably assumes these rooms
+            # are a remainder INSIDE the total, when they are additional to it — and on
+            # a house where the two nearly cancel, that assumption is invisible.
             note += (
-                f", leaving only {len(below_threshold)} conditioned room(s) below the "
-                f"{ductmodel_mod.MIN_RUN_CFM:.0f}-CFM run threshold"
+                f". A further **{len(below_threshold)} conditioned room(s) carry "
+                f"{below_cfm:,.1f} CFM** between them, each below the "
+                f"{ductmodel_mod.MIN_RUN_CFM:.0f}-CFM run threshold — closets, chases and "
+                f"voids, served by transfer rather than a duct of their own. That airflow "
+                f"is **additional to the served sum, not a remainder within it**, so all "
+                f"conditioned rooms together come to **{room_cfm + below_cfm:,.0f} CFM**. "
+                f"Exceeding the whole-house figure is expected: each room takes the larger "
+                f"of its own heating and cooling airflow, and those do not peak in the "
+                f"same rooms"
             )
         else:
             note += " with nothing left over, so every conditioned space is drawn as a room"
