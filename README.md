@@ -47,7 +47,9 @@ The four level-stack keys in the JSON:
 - `levels` — `{level_name: {height_ft}}`, the storey height each level actually used.
 - `spaces` — `{space_name: {heating_factor, cooling_factor}}`. `cooling_factor` is the fraction of the cooling design ΔT the engine **applied**, which for the attic is not the fraction the side-car declared — see [Buffer spaces](#buffer-spaces-and-their-temperatures) below. `heating_factor` *is* the declared policy's; only summer is substituted. `cooling_factor` is `null` exactly when the side-car has no `cooling:` block (a heating-only run) — with a `cooling:` block it is always a number, because the pipeline resolves `outdoor_1_f` from the model's lat/long or raises before the export runs.
 - `voids` — `{room_name: {area_ft2, category}}`, present even when empty, so a consumer can tell "no gaps" from "an export predating the key". `category` is the surface category *that* gap resolved to (`buffer_floor` / `exposed_floor` / `floor`), carried from the resolver rather than inferred from `surfaces` — which answers "what does this envelope contain anywhere", a different question. It is `null` only when two rooms sharing a name resolved to different categories and merged, so no single category describes the entry.
-- `surfaces` — `[{category, area_ft2, space}]`, one entry per envelope surface. `space` is `null` for anything not facing a buffer space (every wall, window, door, and an on-grade `floor`).
+- `surfaces` — `[{category, area_ft2, space, assembly}]`, one entry per envelope surface. `space` is `null` for anything not facing a buffer space (every wall, window, door, and an on-grade `floor`). **`assembly` is the tag the surface retained, not the U-value it was charged** — `null` means no matching tag survived, which covers both an untagged object and one whose tag named a category it cannot produce. A non-null `assembly` that is missing from the side-car's `assemblies` still falls back to the category default, with a warning; so read this field as *"what was declared"* and the coverage table as *"what applied"*.
+
+Plus `assembly_coverage` — `[{category, assembly, u_value, area_ft2, surfaces}]`, mirroring the report's *Assembly coverage* table, with one row per `(category, assembly)` for categories that mix. Always present, empty when nothing is tagged. Diffing this array between two exports is the mechanical form of the lost-tag check described above.
 
 ## The side-car
 
@@ -83,6 +85,40 @@ A side-car written before a category existed keeps working: an unset U-value bor
 | `exposed_floor` | floor over open air (a cantilever or overhang) | `floor` |
 
 **`exposed_floor` is provisional.** Nothing in the geometry infers it: the only way to produce one today is to declare `levels.<name>.below_void: outdoor`, which tells the resolver that an undrawn space beneath that level is open air rather than a crawlspace. Without that, an overhang resolves to `buffer_floor` over `crawlspace`. Treat the key as reserved for the cantilever case until real overhang detection lands.
+
+### Per-surface assemblies
+
+One U-value per category is a fiction in most real houses. Refrhus carries 247.9 ft² of bare R-0 stud wall among 1,320.7 ft² of insulated wall, and 27.2 ft² of single-pane glass among 152.5 ft². A blended U gets the whole-house total right and every *per-room* number wrong — and per-room CFM is what Manual D and register selection run on.
+
+So an assembly key may name a **variant** of its category:
+
+```yaml
+assemblies:
+  exterior_wall: 0.097          # the category default
+  window: 0.550
+  exterior_wall/r0: 0.240       # the uninsulated sections
+  window/single: 0.900
+  ceiling/r19: 0.049
+```
+
+The text before the `/` is the category, so a variant whose prefix is not a real category fails at load rather than silently matching nothing.
+
+A surface points at a key two ways:
+
+| Source | Written by | Applies to |
+|---|---|---|
+| `<property name='eldr.assembly' value='exterior_wall/r0'/>` | `tag.py` in the realm sh3d tooling | walls, rooms |
+| a bracketed token in the furniture `name` — `Bedroom window [window/single]` | **you, in Sweet Home 3D's furniture list** | windows, doors |
+
+**`tag.py` is not in this repository.** Eldr *reads* the property; writing it is a modelling concern, and the writer lives with the rest of the Sweet Home 3D tooling in the [Yggdrasil](https://github.com/Cervator/yggdrasil) workspace at `realms/realm-siliconsaga/sweethome3d/tag.py`. Anything that can add a `<property name='eldr.assembly' value='…'/>` element to a wall or room works just as well — the format is the contract, not the tool. Without a writer, **windows and doors are still fully taggable by hand**; only walls and rooms need tooling.
+
+A property beats a name. The bracketed form exists because Sweet Home 3D's UI can edit a `name` and cannot edit a custom property, and walls have no name at all — so windows and doors are taggable by hand while walls need the tool. A bracketed token counts only when it contains `/` **and** its prefix is a real category, so an ordinary `[kitchen]` in a name is ignored and nobody's existing naming breaks.
+
+**One property, several categories.** The value is a whitespace-separated list, and each key lands on the surfaces of its own category. That is what a room needs, because a room produces both a ceiling and a floor: `value='ceiling/r19 buffer_floor/none'`. Rooms are property-only — Sweet Home 3D draws a room's name on the plan, so a tag there would be visible clutter.
+
+**A tag selects a U-value within a category and can never change the category.** That stays `walls: {<id>: {boundary: …}}`. The asymmetry is deliberate: a wrong U makes a number wrong, while a wrong category would silently move a surface into or out of the envelope.
+
+The whole-house tables stay keyed by **category**, so every number remains comparable across this change. The split is visible only in the report's **Assembly coverage** block, which lists area and surface count per variant for categories that actually mix. Read it across runs as well as within one: redrawing a wall gives it a new id and drops its properties, so a variant's area shrinking between two runs is the only available signal that a tag was lost.
 
 ### Below-grade U-values are effective values
 

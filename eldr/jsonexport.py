@@ -102,9 +102,28 @@ def analysis_to_dict(a) -> dict:
                   for name, v in a.env.voids.items()},
         # New in this cut: the whole-house horizontal split becomes inspectable without
         # re-deriving it. `space` is null for anything not facing a buffer space.
+        #
+        # `assembly` is the tag the surface RETAINED, not the U-value it was charged.
+        # Null means no matching tag survived — an untagged object, or one whose tag
+        # named a category it cannot produce. The two are NOT the same thing: a tag can
+        # be retained here and still be absent from the side-car's `assemblies`, in
+        # which case `loads._u_value` warns and falls back to the category default. So
+        # a non-null `assembly` says "this surface declared a variant", not "this
+        # surface was priced at that variant" — check the side-car, or the report's
+        # coverage table, to learn which U-value actually applied.
         "surfaces": [
-            {"category": s.category, "area_ft2": s.area_ft2, "space": s.space}
+            {"category": s.category, "area_ft2": s.area_ft2, "space": s.space,
+             "assembly": s.assembly}
             for s in a.env.surfaces
+        ],
+        # One row per (category, assembly) for categories that MIX, mirroring the
+        # report's *Assembly coverage* table. Empty when nothing is tagged. A consumer
+        # comparing two exports can see a variant's area move, which is the only signal
+        # available that a tag was lost with a redrawn wall.
+        "assembly_coverage": [
+            {"category": r.category, "assembly": r.assembly, "u_value": r.u_value,
+             "area_ft2": r.area_ft2, "surfaces": r.count}
+            for r in loads.assembly_coverage(a.env.surfaces, a.sc.assemblies)
         ],
         "ducts": None,
     }

@@ -790,3 +790,66 @@ def test_per_room_internal_only_for_conditioned():
     cr, ur = loads.per_room_loads(env, _sc_cool())
     # both have identical geometry; the conditioned room's cooling includes internal gain
     assert cr.cooling_btuh > ur.cooling_btuh
+
+
+# --- per-surface assemblies -----------------------------------------------------------
+#
+# A surface may name a VARIANT of its category (`exterior_wall/r0`) and get that U-value
+# instead of the category default. The spread below is deliberately 2.5x: a fixture whose
+# variant U sits near its category default passes whether resolution works or not, which
+# is the defect that recurred throughout the level-stack work.
+
+_ASM = {"exterior_wall": 0.10, "exterior_wall/r0": 0.25, "window": 0.30}
+
+
+def test_untagged_surface_uses_category_default():
+    assert loads._u_value(geometry.Surface("exterior_wall", 100.0), _ASM) == 0.10
+
+
+def test_tagged_surface_uses_its_variant():
+    s = geometry.Surface("exterior_wall", 100.0, assembly="exterior_wall/r0")
+    assert loads._u_value(s, _ASM) == 0.25
+
+
+def test_mixed_surfaces_aggregate_under_one_category():
+    """Variants must NOT split the by-category table. Every archived run and every
+    existing report column is keyed by category, and a feature that re-shaped them
+    would make the run archive incomparable across this change."""
+    surfs = [geometry.Surface("exterior_wall", 100.0),
+             geometry.Surface("exterior_wall", 100.0, assembly="exterior_wall/r0")]
+    total, by_cat = loads._conduction(surfs, _ASM, lambda s: 10.0)
+    assert total == pytest.approx(100 * 0.10 * 10 + 100 * 0.25 * 10)
+    assert set(by_cat) == {"exterior_wall"}
+    assert by_cat["exterior_wall"] == pytest.approx(total)
+
+
+def test_tag_naming_undeclared_variant_warns_and_falls_back():
+    s = geometry.Surface("exterior_wall", 100.0, assembly="exterior_wall/nope")
+    with pytest.warns(UserWarning, match="declares no such assembly"):
+        assert loads._u_value(s, _ASM) == 0.10
+
+
+def test_tag_from_another_category_is_rejected():
+    """A tag selects a U WITHIN a category; it can never change one. Enforcing that
+    keeps a mis-tag from silently moving a surface into or out of the envelope."""
+    s = geometry.Surface("exterior_wall", 100.0, assembly="window/single")
+    with pytest.warns(UserWarning, match="cannot change one"):
+        assert loads._u_value(s, {**_ASM, "window/single": 0.9}) == 0.10
+
+
+def test_variant_does_not_substring_match_its_category():
+    """`exterior_wall/r0` contains `exterior_wall`. A resolver matching on that prefix
+    would return the category default here and look correct — so assert the VARIANT's
+    own number, which only an exact-key lookup can produce."""
+    s = geometry.Surface("exterior_wall", 100.0, assembly="exterior_wall/r0")
+    assert loads._u_value(s, _ASM) == 0.25
+    assert loads._u_value(s, _ASM) != _ASM["exterior_wall"]
+
+
+def test_tagged_surface_still_borrows_when_category_default_missing():
+    """The borrow chain is untouched by tagging: an undeclared variant falls back to
+    the category, and if THAT is undeclared too the existing borrow still fires."""
+    s = geometry.Surface("buffer_floor", 100.0, assembly="buffer_floor/nope")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        assert loads._u_value(s, {"floor": 0.05}) == 0.05

@@ -59,7 +59,12 @@ def render_heating(result: loads.HeatingResult, sc: sidecar.SideCar,
     if sizing is not None:
         lines += _manual_s_section(sizing)
     if duct_plan is not None:
-        lines += _per_room_section(duct_plan, result.cfm)
+        # Each room's design CFM is the larger of its heating and cooling airflow,
+        # so the whole-house figure it gets compared against has to be the larger
+        # of the two as well. Passing heating alone compares different quantities
+        # and lets a cooling-dominant house look like it has undrawn rooms.
+        design_cfm = max(result.cfm, cooling.cfm) if cooling is not None else result.cfm
+        lines += _per_room_section(duct_plan, design_cfm)
     if ducts is not None:
         lines += _duct_section(ducts, duct_plan)
     return "\n".join(lines)
@@ -68,12 +73,14 @@ def render_heating(result: loads.HeatingResult, sc: sidecar.SideCar,
 def _assumptions_section(env: geometry_mod.Envelope, sc: sidecar.SideCar) -> list[str]:
     """The assumptions the numbers above are standing on, echoed back.
 
-    Four things the engine decided quietly and the reader cannot otherwise see: the
+    Five things the engine decided quietly and the reader cannot otherwise see: the
     storey height each level was given, the ΔT fraction each buffer space resolved to,
-    any U-value that had to be borrowed from a related assembly, and any floor area
-    modeled over a space nobody drew — then the open questions those decisions leave.
+    which surfaces claimed an assembly of their own, any U-value that had to be borrowed
+    from a related assembly, and any floor area modeled over a space nobody drew — then
+    the open questions those decisions leave.
     """
     blocks = (_levels_block(env, sc) + _spaces_block(env, sc)
+              + _coverage_block(env, sc)
               + _borrows_block(env, sc) + _voids_block(env, sc)
               + _open_questions_block(env, sc))
     if not blocks:
@@ -209,6 +216,36 @@ def _summer_input(policy: spaces_mod.SpacePolicy, effective: spaces_mod.SpacePol
             f"shorthand, reused for summer")
 
 
+def _coverage_block(env: geometry_mod.Envelope, sc: sidecar.SideCar) -> list[str]:
+    """Which surfaces claimed an assembly of their own, and which took the default.
+
+    Emitted only for categories that actually MIX, because a category whose surfaces are
+    all untagged says nothing worth a row and would bury the one that does.
+    """
+    rows = loads.assembly_coverage(env.surfaces, sc.assemblies)
+    if not rows:
+        return []
+    lines = ["", "### Assembly coverage", "",
+             "| Category | Assembly | U used | Area | Surfaces |",
+             "|---|---|---:|---:|---:|"]
+    for r in rows:
+        label = f"`{r.assembly}`" if r.assembly else "_(untagged — category default)_"
+        lines.append(f"| `{r.category}` | {label} | {r.u_value:g} "
+                     f"| {r.area_ft2:,.1f} ft² | {r.count} |")
+    lines += [
+        "",
+        "_A surface may name a variant of its category — `exterior_wall/r0` for the "
+        "uninsulated sections of a wall that is mostly insulated — and take that U-value "
+        "instead of the category default. The whole-house tables above stay keyed by "
+        "category, so this is the only place the split is visible._",
+        "",
+        "_Read this table across runs, not just within one. Redrawing a wall in Sweet "
+        "Home 3D gives it a new id and drops its properties, so nothing can report that a "
+        "tag was lost — but a variant's area shrinking between two runs says it plainly._",
+    ]
+    return lines
+
+
 def _borrows_block(env: geometry_mod.Envelope, sc: sidecar.SideCar) -> list[str]:
     """U-values the engine had to borrow from a related assembly, and from what.
 
@@ -217,14 +254,19 @@ def _borrows_block(env: geometry_mod.Envelope, sc: sidecar.SideCar) -> list[str]
     floor: the geometry gap is disclosed below, while the U-value standing in for it is
     a slab's effective whole-area number, an order of magnitude off a framed floor.
     """
+    # Per SURFACE, not per category: a surface carrying a declared same-category variant
+    # takes that U-value directly and borrows nothing, even where the bare category is
+    # unset. Aggregating by category alone would report the whole category's area as
+    # borrowed when some — or all — of it resolved exactly.
     borrows: dict[str, tuple[loads.AssemblyBorrow, float]] = {}
     for s in env.surfaces:
+        borrow = loads.surface_borrow(s, sc.assemblies)
+        if borrow is None:
+            continue
         if s.category in borrows:
             borrows[s.category] = (borrows[s.category][0],
                                    borrows[s.category][1] + s.area_ft2)
-            continue
-        borrow = loads.assembly_borrow(s.category, sc.assemblies)
-        if borrow is not None:
+        else:
             borrows[s.category] = (borrow, s.area_ft2)
     if not borrows:
         return []
@@ -429,16 +471,67 @@ def _per_room_section(plan: ductmodel_mod.DuctPlan, whole_house_cfm: float) -> l
     for rl in served:
         lines.append(f"| {rl.name} | {rl.heating_btuh:,.0f} | {rl.cooling_btuh:,.0f} "
                      f"| {rl.cfm:,.0f} |")
-    lines.append(f"| **{len(served)} rooms** | | | **{room_cfm:,.0f}** |")
-    lines += [
-        "",
-        f"_Each room's load is from the exterior walls, windows, doors and ceiling/floor "
-        f"attributed to it, plus infiltration on its own volume; design CFM is the larger "
-        f"of heating/cooling airflow. Served rooms sum to **{room_cfm:,.0f} CFM** vs the "
-        f"whole-house **{whole_house_cfm:,.0f} CFM** — the gap is space not carried here: "
-        f"floor area not yet drawn as rooms (halls, stairs, unfinished), plus tiny rooms "
-        f"below the {ductmodel_mod.MIN_RUN_CFM:.0f}-CFM run threshold. Draw more rooms and it closes._",
-    ]
+    # Total the values as DISPLAYED, so the column visibly adds up. Summing the
+    # unrounded figures instead leaves a total that disagrees with its own rows
+    # by a few CFM and reads as an arithmetic error.
+    shown_cfm = sum(round(rl.cfm) for rl in served)
+    lines.append(f"| **{len(served)} rooms** | | | **{shown_cfm:,.0f}** |")
+
+    # Conditioned rooms that exist but fall under the run threshold. They are real
+    # space, so the "nothing left over" claim must not be made while any survive.
+    below_threshold = [rl for rl in plan.room_loads
+                       if rl.conditioned and rl.cfm < ductmodel_mod.MIN_RUN_CFM]
+
+    note = (
+        "_Each room's load is from the exterior walls, windows, doors and ceiling/floor "
+        "attributed to it, plus infiltration on its own volume; design CFM is the larger "
+        "of heating/cooling airflow. "
+    )
+    gap = whole_house_cfm - room_cfm
+    if gap >= 1:
+        note += (
+            f"Served rooms sum to **{shown_cfm:,.0f} CFM** against the whole-house "
+            f"**{whole_house_cfm:,.0f} CFM** — the shortfall is space not carried here: "
+            f"floor area not yet drawn as rooms (halls, stairs, unfinished), plus "
+            f"{len(below_threshold)} conditioned room(s) below the "
+            f"{ductmodel_mod.MIN_RUN_CFM:.0f}-CFM run threshold. Draw more rooms and it "
+            f"closes._"
+        )
+    elif gap <= -1:
+        # Not an error, and not undrawn space: each room takes the larger of its own
+        # heating and cooling airflow, and the two peak in different rooms. Summing
+        # per-room maxima therefore exceeds the whole-house maximum by construction.
+        note += (
+            f"Served rooms sum to **{shown_cfm:,.0f} CFM**, *above* the whole-house "
+            f"**{whole_house_cfm:,.0f} CFM**. That is expected rather than an "
+            f"inconsistency: each room takes the larger of its own heating and cooling "
+            f"airflow, and those do not peak in the same rooms, so per-room maxima add "
+            f"up to more than the whole-house maximum. Size equipment on the whole-house "
+            f"figure and branches on the room figures._"
+        )
+    else:
+        note += (
+            f"Served rooms account for the whole-house **{whole_house_cfm:,.0f} CFM**"
+        )
+        if below_threshold:
+            note += (
+                f", leaving only {len(below_threshold)} conditioned room(s) below the "
+                f"{ductmodel_mod.MIN_RUN_CFM:.0f}-CFM run threshold"
+            )
+        else:
+            note += " with nothing left over, so every conditioned space is drawn as a room"
+        note += "."
+        # The column totals the rounded rows so it adds up on the page; the
+        # whole-house figure rounds once, at the end. Say so rather than leave
+        # a 1-CFM difference looking like an arithmetic slip.
+        if round(shown_cfm) != round(whole_house_cfm):
+            note += (
+                f" The column totals **{shown_cfm:,.0f}** because each row is rounded "
+                f"before summing, while the whole-house figure rounds once at the end._"
+            )
+        else:
+            note += "_"
+    lines += ["", note]
     return lines
 
 
@@ -483,6 +576,12 @@ def _duct_section(dr: ductd_mod.DuctResult,
             lines.append(f"| {r.name} | {r.cfm:,.0f} | {r.exact_dia_in:.1f}″ | "
                          f"**{r.standard_dia_in}″** | {r.velocity_fpm:,.0f} fpm{flag} |")
     lines += [
+        "",
+        "_**Analysis, not a duct schedule.** These sizes come from each room's own load "
+        "with no trunk hierarchy, no reducing runs and no installed layout — they answer "
+        "\"how big would a dedicated duct to this room have to be\", which is a useful "
+        "cross-check and not a thing anyone builds. Where a project keeps a hand-authored "
+        "register schedule, that schedule is the authority for what gets installed._",
         "",
         "_Round duct, equal-friction, demo-grade. Total effective length uses a fitting "
         "fudge factor, not true fitting equivalent lengths; a full Manual D adds those and "
@@ -539,10 +638,12 @@ def _cooling_section(c: loads.CoolingResult, sc: sidecar.SideCar) -> list[str]:
         "to hold the dry-bulb setpoint. **Latent** is a separate quantity: moisture, from "
         "the occupants and from the humidity the infiltrating air carries in. That is why "
         "it has no component breakdown — no wall, window or roof contributes to it. "
-        "**Total** is simply the two added. Supply airflow is sized on **sensible** alone, "
-        "not on the total, which is why the CFM does not come off the bottom line: air "
-        "carries the sensible load by temperature difference, while the latent load leaves "
-        "as condensate at the coil rather than by moving more air._",
+        "**Total** is simply the two added — from the unrounded figures, before each row "
+        "is rounded for display, so the three printed numbers can be off by one against "
+        "each other without any of them being wrong. Supply airflow is sized on "
+        "**sensible** alone, not on the total, which is why the CFM does not come off the "
+        "bottom line: air carries the sensible load by temperature difference, while the "
+        "latent load leaves as condensate at the coil rather than by moving more air._",
         "",
         "_Solar reads each window's exact bearing (grouped for display by nearest "
         "8-point, e.g. `solar-SW`), from the model's compass `northDirection`._",

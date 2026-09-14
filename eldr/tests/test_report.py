@@ -132,6 +132,43 @@ def test_render_per_room_section():
     assert "220 CFM" in md               # whole-house cfm from the HeatingResult, in the gap note
 
 
+def _plan_with(room_cfms):
+    """A plan whose conditioned rooms carry exactly `room_cfms`."""
+    room_loads = [loads.RoomLoad(f"Room {i}", "L1", True, 1000.0, 400.0, c)
+                  for i, c in enumerate(room_cfms)]
+    return ductmodel.DuctPlan(
+        unit=None, unit_name="air handler", friction_rate=0.08, derived=False,
+        available_static_pressure=None, worst_length_ft=None,
+        room_loads=room_loads, runs=[("main trunk", sum(room_cfms))], lengths=None)
+
+
+def test_per_room_note_reports_a_shortfall_as_undrawn_space():
+    """The gap that genuinely means geometry is missing: rooms sum below the house."""
+    md = report.render_heating(_result(), _sc(), duct_plan=_plan_with([100.0, 50.0]))
+    assert "the shortfall is space not carried here" in md
+    assert "Draw more rooms" in md
+
+
+def test_per_room_note_does_not_call_an_overage_undrawn_space():
+    """Each room takes the larger of its own heating and cooling airflow, and the two
+    peak in different rooms — so per-room maxima can exceed the whole-house maximum.
+    Reporting that as missing geometry sends the reader looking for rooms that are
+    already drawn."""
+    md = report.render_heating(_result(), _sc(), duct_plan=_plan_with([200.0, 150.0]))
+    assert "above* the whole-house" in md
+    assert "expected rather than an" in md
+    assert "Draw more rooms" not in md
+
+
+def test_per_room_note_states_the_rounding_rule_when_the_column_differs():
+    """Rows are rounded before summing so the column adds up on the page; the
+    whole-house figure rounds once. Where that leaves a 1-CFM difference, say why
+    rather than leave it looking like an arithmetic slip."""
+    md = report.render_heating(_result(), _sc(), duct_plan=_plan_with([110.4, 109.4]))
+    assert "with nothing left over" in md or "below the" in md
+    assert "rounded" in md
+
+
 def test_render_manual_d_without_unit_notes_absence():
     dr = ductd.size_ducts([("main trunk", 120), ("Big Room", 111)], friction_rate=0.08)
     md = report.render_heating(_result(), _sc(), ducts=dr, duct_plan=_plan())
@@ -613,6 +650,41 @@ def test_report_sums_the_area_of_every_surface_sharing_a_borrowed_category():
     assert _row(md, "`buffer_floor`")[2] == "149.5 ft²"
 
 
+def test_a_tagged_surface_does_not_count_as_borrowing():
+    """`buffer_floor` is unset, so the CATEGORY would borrow from `floor`. But this
+    surface declares `buffer_floor/framed`, which IS declared — so it resolves exactly
+    and borrows nothing. Counting its area against the borrow reports a stand-in the
+    engine never used, the failure `loads.assembly_borrow` names in its own docstring.
+    """
+    sc = sidecar.SideCar(
+        assemblies={"exterior_wall": 0.1, "floor": 0.05, "buffer_floor/framed": 0.07},
+        design=sidecar.DesignConditions(70, 20, 50),
+        infiltration_ach=0.5,
+    )
+    env = _env(surfaces=[geometry.Surface("buffer_floor", 149.5, "crawlspace",
+                                          assembly="buffer_floor/framed")])
+    md = report.render_heating(_result(), sc, env=env)
+    assert "Borrowed assembly" not in md
+
+
+def test_only_the_untagged_share_of_a_category_counts_as_borrowed():
+    """The mixed case, which is the one a real model produces: one floor tagged and
+    declared, one untagged. Only the untagged area stands on the borrowed U-value."""
+    sc = sidecar.SideCar(
+        assemblies={"exterior_wall": 0.1, "floor": 0.05, "buffer_floor/framed": 0.07},
+        design=sidecar.DesignConditions(70, 20, 50),
+        infiltration_ach=0.5,
+    )
+    env = _env(surfaces=[geometry.Surface("buffer_floor", 100.0, "crawlspace",
+                                          assembly="buffer_floor/framed"),
+                         geometry.Surface("buffer_floor", 49.5, "garage")])
+    md = report.render_heating(_result(), sc, env=env)
+    # Scope to the borrow block — the coverage table also has a `buffer_floor` row,
+    # and matching the wrong one is how a passing assertion proves nothing.
+    borrow_block = md.split("### Borrowed assembly U-values")[1]
+    assert _row(borrow_block, "`buffer_floor`")[2] == "49.5 ft²"
+
+
 def test_report_omits_the_borrow_block_when_every_assembly_is_declared():
     sc = sidecar.SideCar(
         assemblies={"exterior_wall": 0.1, "buffer_floor": 0.08, "floor": 0.05},
@@ -750,3 +822,75 @@ def test_cooling_section_explains_what_sensible_latent_and_total_are():
     assert "no component breakdown" in note          # why latent has no rows of its own
     assert "occupants" in note and "infiltrating air" in note   # where latent comes from
     assert "sized on **sensible** alone" in note     # and why the CFM misses the total
+
+
+# --- assembly coverage ----------------------------------------------------------------
+
+_COV_ASM = {"exterior_wall": 0.10, "exterior_wall/r0": 0.25, "window": 0.30}
+
+
+def _cov_sc():
+    return sidecar.SideCar(
+        assemblies=dict(_COV_ASM),
+        design=sidecar.DesignConditions(70, 20, 50),
+        infiltration_ach=0.5,
+    )
+
+
+def _cov_env():
+    return geometry.Envelope(surfaces=[
+        geometry.Surface("exterior_wall", 300.0),
+        geometry.Surface("exterior_wall", 100.0, assembly="exterior_wall/r0"),
+        geometry.Surface("exterior_wall", 50.0, assembly="exterior_wall/r0"),
+        geometry.Surface("window", 40.0),          # window never mixes -> omitted
+    ], volume_ft3=0.0)
+
+
+def test_coverage_buckets_by_category_and_assembly():
+    rows = loads.assembly_coverage(_cov_env().surfaces, _COV_ASM)
+    tagged = next(r for r in rows if r.assembly == "exterior_wall/r0")
+    assert tagged.area_ft2 == pytest.approx(150.0)
+    assert tagged.count == 2
+    assert tagged.u_value == 0.25
+
+
+def test_coverage_untagged_row_reports_the_category_default():
+    rows = loads.assembly_coverage(_cov_env().surfaces, _COV_ASM)
+    untagged = next(r for r in rows if r.category == "exterior_wall" and r.assembly is None)
+    assert untagged.area_ft2 == pytest.approx(300.0)
+    assert untagged.u_value == 0.10
+
+
+def test_coverage_omits_categories_that_do_not_mix():
+    """A category with no tagged surface says nothing worth a row, and listing every
+    one of them would bury the category that actually splits."""
+    rows = loads.assembly_coverage(_cov_env().surfaces, _COV_ASM)
+    assert all(r.category != "window" for r in rows)
+
+
+def test_coverage_orders_variants_before_the_untagged_remainder():
+    rows = loads.assembly_coverage(_cov_env().surfaces, _COV_ASM)
+    assert [r.assembly for r in rows] == ["exterior_wall/r0", None]
+
+
+def test_coverage_is_empty_for_a_wholly_untagged_envelope():
+    env = geometry.Envelope(surfaces=[geometry.Surface("exterior_wall", 300.0)],
+                            volume_ft3=0.0)
+    assert loads.assembly_coverage(env.surfaces, _COV_ASM) == []
+
+
+def test_report_renders_the_coverage_block():
+    md = report.render_heating(loads.heating_load(_cov_env(), _cov_sc()), _cov_sc(),
+                               env=_cov_env())
+    assert "### Assembly coverage" in md
+    assert "`exterior_wall/r0`" in md
+    assert "_(untagged — category default)_" in md
+    # the note has to say what the table is FOR, not just what it shows
+    assert "shrinking between two runs" in md
+
+
+def test_report_omits_the_coverage_block_when_nothing_is_tagged():
+    env = geometry.Envelope(surfaces=[geometry.Surface("exterior_wall", 300.0)],
+                            volume_ft3=0.0)
+    md = report.render_heating(loads.heating_load(env, _cov_sc()), _cov_sc(), env=env)
+    assert "### Assembly coverage" not in md

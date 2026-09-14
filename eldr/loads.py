@@ -125,11 +125,52 @@ def _conduction(surfaces, assemblies, dt_for):
     by_category: dict[str, float] = {}
     total = 0.0
     for s in surfaces:
-        u = _u_value(s.category, assemblies)
+        u = _u_value(s, assemblies)
         q = u * s.area_ft2 * dt_for(s)
         by_category[s.category] = by_category.get(s.category, 0.0) + q
         total += q
     return total, by_category
+
+
+@dataclass(frozen=True)
+class CoverageRow:
+    """One (category, assembly) bucket of the envelope, for the coverage table."""
+    category: str
+    assembly: str | None      # None = the untagged remainder of the category
+    u_value: float
+    area_ft2: float
+    count: int
+
+
+def assembly_coverage(surfaces, assemblies) -> list[CoverageRow]:
+    """Area and surface count per (category, assembly), for categories that MIX.
+
+    A category whose surfaces are all untagged is omitted: the table exists to show a
+    split, and listing every category unsplit would bury the one that matters.
+
+    This is also the only detector available for a LOST tag. When a wall is redrawn in
+    Sweet Home 3D its id and its properties go with it, so nothing can report "this used
+    to be tagged" — but a variant's area shrinking between two runs is visible here, and
+    the archived runs are what make that comparison possible.
+    """
+    buckets: dict[tuple[str, str | None], tuple[float, int]] = {}
+    for s in surfaces:
+        key = (s.category, s.assembly)
+        area, count = buckets.get(key, (0.0, 0))
+        buckets[key] = (area + s.area_ft2, count + 1)
+    mixed = {cat for cat, asm in buckets if asm is not None}
+    rows = []
+    for (category, assembly), (area, count) in buckets.items():
+        if category not in mixed:
+            continue
+        with warnings.catch_warnings():        # the table reports; it does not re-warn
+            warnings.simplefilter("ignore")
+            u = _u_value(geometry.Surface(category, 0.0, assembly=assembly), assemblies)
+        rows.append(CoverageRow(category, assembly, u, area, count))
+    # Category, then variants alphabetically, then the untagged remainder LAST — the
+    # remainder is the baseline the variants are exceptions to, and reads better beneath
+    # them than above them.
+    return sorted(rows, key=lambda r: (r.category, r.assembly is None, r.assembly or ""))
 
 
 @dataclass(frozen=True)
@@ -160,7 +201,54 @@ def assembly_borrow(category: str, assemblies: dict[str, float]) -> AssemblyBorr
     return None
 
 
-def _u_value(category, assemblies):
+def surface_borrow(surface, assemblies):
+    """The borrow THIS surface actually makes, or None if it resolves directly.
+
+    `assembly_borrow` answers the question for a category. That is not the same question
+    once surfaces carry their own assemblies: a surface with a declared, configured,
+    same-category variant takes that U-value and borrows nothing, even where the bare
+    category is unset and the category as a whole would borrow.
+
+    Counting a surface's area against a borrow it did not make is the failure
+    `assembly_borrow` warns about in its own docstring — a report describing a borrow
+    the engine never performed.
+    """
+    if surface.assembly is not None:
+        category, _variant = sidecar.split_assembly_key(surface.assembly)
+        if category == surface.category and surface.assembly in assemblies:
+            return None
+    return assembly_borrow(surface.category, assemblies)
+
+
+def _u_value(surface, assemblies):
+    """U-value for a surface: its own assembly if it declared one, else its category's.
+
+    A tag selects among the several assemblies of ONE category — `exterior_wall/r0` for
+    the uninsulated sections of a wall that is mostly R-11. It deliberately cannot change
+    the category: that would let a mis-tag move a surface into or out of the envelope
+    silently, where a wrong U-value only makes a number wrong.
+
+    Both failure modes fall back to the category rather than raising, because a stale tag
+    on one wall should not stop the whole house computing — but neither is silent.
+    """
+    if surface.assembly is not None:
+        category, _variant = sidecar.split_assembly_key(surface.assembly)
+        if category != surface.category:
+            warnings.warn(
+                f"surface tagged `{surface.assembly}` but it is a '{surface.category}' — "
+                f"a tag selects a U-value within a category, it cannot change one; "
+                f"ignoring the tag and using `{surface.category}`", stacklevel=4)
+        elif surface.assembly in assemblies:
+            return assemblies[surface.assembly]
+        else:
+            warnings.warn(
+                f"surface tagged `{surface.assembly}` but the side-car declares no such "
+                f"assembly — falling back to `{surface.category}`; declare "
+                f"`assemblies.{surface.assembly}` or fix the tag", stacklevel=4)
+    return _category_u_value(surface.category, assemblies)
+
+
+def _category_u_value(category, assemblies):
     """U-value for a surface category, borrowing a related assembly when unset.
 
     A borrow is announced, never silent. The categories are related but not

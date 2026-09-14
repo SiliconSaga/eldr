@@ -2,6 +2,7 @@ import textwrap
 import warnings
 import zipfile
 import pytest
+import defusedxml.ElementTree as DET
 from eldr import geometry
 from eldr.tests.fixtures import MULTI_LEVEL_FIXTURE
 
@@ -906,3 +907,292 @@ def test_below_void_outdoor_reaches_exposed_floor_on_a_lone_conditioned_storey(t
     # and the undrawn area is reported as the schematic gap it is, in ITS category
     assert env.voids["Living room"].category == "exposed_floor"
     assert env.voids["Living room"].area_ft2 == pytest.approx(foot, rel=0.02)
+
+
+# --- reading assembly tags out of Home.xml --------------------------------------------
+#
+# Two sources, because Sweet Home 3D's UI can edit a furniture NAME but has no editor for
+# custom properties at all, and walls have no name to edit. So walls are tagged by a tool
+# writing `<property>`, while windows, doors and rooms can also be tagged by hand in the
+# app. Neither reader validates against the side-car — that is the load path's job, which
+# keeps parsing independent of what happens to be declared.
+
+
+def _elem(xml):
+    return DET.fromstring(xml)
+
+
+def test_property_tag_read():
+    e = _elem("<wall><property name='eldr.assembly' value='exterior_wall/r0'/></wall>")
+    assert geometry._element_assembly_tags(e) == ["exterior_wall/r0"]
+
+
+def test_property_tag_whitespace_separated_list():
+    """One object can produce surfaces in several categories — a room has both a
+    ceiling and a floor — so the value is a list, disambiguated by each key's own
+    category rather than by needing a property name per category."""
+    e = _elem("<room><property name='eldr.assembly' "
+              "value='ceiling/r19  buffer_floor/none'/></room>")
+    assert geometry._element_assembly_tags(e) == ["ceiling/r19", "buffer_floor/none"]
+
+
+def test_unrelated_property_ignored():
+    e = _elem("<wall><property name='com.eteks.sweethome3d.SweetHome3D.FrameX' "
+              "value='25'/></wall>")
+    assert geometry._element_assembly_tags(e) == []
+
+
+def test_element_with_no_properties_has_no_tags():
+    assert geometry._element_assembly_tags(_elem("<wall/>")) == []
+
+
+def test_bracketed_name_tag():
+    assert geometry._name_assembly_tags("Bedroom window [window/single]") == ["window/single"]
+
+
+def test_bracketed_token_without_slash_is_not_a_tag():
+    """This is what makes the convention safe to overlay on free-form names: an
+    ordinary bracketed note is invisible here, so nobody's existing naming breaks."""
+    assert geometry._name_assembly_tags("Window [kitchen]") == []
+
+
+def test_bracketed_token_with_unknown_category_is_not_a_tag():
+    assert geometry._name_assembly_tags("Window [wibble/single]") == []
+
+
+def test_bracketed_tag_among_other_text_and_brackets():
+    assert geometry._name_assembly_tags(
+        "Sash [old] window [window/single] [note]") == ["window/single"]
+
+
+def test_no_name_is_no_tag():
+    assert geometry._name_assembly_tags(None) == []
+    assert geometry._name_assembly_tags("") == []
+
+
+# --- tags reaching whole-house surfaces -----------------------------------------------
+
+# The base box with one wall tagged by property and the window tagged by name. Both
+# categories keep an UNtagged member, so a broken split cannot hide: a category with a
+# single surface would aggregate correctly whether or not the tag was read.
+TAGGED_FIXTURE = FIXTURE.replace(
+    "<wall id='w-n' level='L1' xStart='0' yStart='0' xEnd='1000' yEnd='0' "
+    "height='300' thickness='10'/>",
+    "<wall id='w-n' level='L1' xStart='0' yStart='0' xEnd='1000' yEnd='0' "
+    "height='300' thickness='10'>"
+    "<property name='eldr.assembly' value='exterior_wall/r0'/></wall>",
+).replace(
+    "name='Window' x='500' y='500'",
+    "name='Window [window/single]' x='500' y='500'",
+)
+
+
+def _surface_assemblies(env, category):
+    return sorted((s.assembly for s in env.surfaces if s.category == category),
+                  key=lambda a: (a is not None, a))
+
+
+def test_wall_property_tag_reaches_its_surface(tmp_path):
+    p = tmp_path / "Home.xml"
+    p.write_text(TAGGED_FIXTURE)
+    env = geometry.extract_envelope(str(p))
+    tagged = [s for s in env.surfaces
+              if s.category == "exterior_wall" and s.assembly == "exterior_wall/r0"]
+    assert len(tagged) == 1
+    # the other three exterior walls stay untagged — the split is real, not blanket
+    assert _surface_assemblies(env, "exterior_wall").count(None) == 3
+
+
+def test_window_name_tag_reaches_its_surface(tmp_path):
+    p = tmp_path / "Home.xml"
+    p.write_text(TAGGED_FIXTURE)
+    env = geometry.extract_envelope(str(p))
+    assert _surface_assemblies(env, "window") == ["window/single"]
+
+
+def test_untagged_model_produces_no_assemblies(tmp_path):
+    """The control. Every surface in an untagged model must carry None, or the
+    tagged-fixture assertions above prove nothing about tagging specifically."""
+    p = tmp_path / "Home.xml"
+    p.write_text(FIXTURE)
+    env = geometry.extract_envelope(str(p))
+    assert all(s.assembly is None for s in env.surfaces)
+
+
+def test_wall_tagged_with_a_window_assembly_warns(tmp_path):
+    """A wall can never emit a `window` surface, so `window/single` on one is dead
+    text. Without a warning it reads as success while the wall silently takes its
+    category default — the exact failure the coverage report exists to catch, one
+    level earlier."""
+    p = tmp_path / "Home.xml"
+    p.write_text(FIXTURE.replace(
+        "<wall id='w-n' level='L1' xStart='0' yStart='0' xEnd='1000' yEnd='0' "
+        "height='300' thickness='10'/>",
+        "<wall id='w-n' level='L1' xStart='0' yStart='0' xEnd='1000' yEnd='0' "
+        "height='300' thickness='10'>"
+        "<property name='eldr.assembly' value='window/single'/></wall>",
+    ))
+    with pytest.warns(UserWarning, match="cannot produce"):
+        env = geometry.extract_envelope(str(p))
+    # and the wall still falls back cleanly rather than carrying the bogus tag
+    assert all(s.assembly is None for s in env.surfaces if s.category == "exterior_wall")
+
+
+def test_a_walls_unused_but_emittable_tag_does_not_warn(tmp_path):
+    """A wall's category is resolved from its boundary, so a modeller may legitimately
+    declare a key for more than one of the categories a wall can produce. This wall
+    resolves as `exterior_wall`, leaving `basement_wall/block` unused — which must stay
+    silent, or the mistagged-object warning fires on correctly tagged walls instead.
+    """
+    p = tmp_path / "Home.xml"
+    p.write_text(FIXTURE.replace(
+        "<wall id='w-n' level='L1' xStart='0' yStart='0' xEnd='1000' yEnd='0' "
+        "height='300' thickness='10'/>",
+        "<wall id='w-n' level='L1' xStart='0' yStart='0' xEnd='1000' yEnd='0' "
+        "height='300' thickness='10'>"
+        "<property name='eldr.assembly' "
+        "value='exterior_wall/r0 basement_wall/block'/></wall>",
+    ))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        env = geometry.extract_envelope(str(p))
+    # The matching key still lands, so the silence is not silence about everything.
+    assert "exterior_wall/r0" in _surface_assemblies(env, "exterior_wall")
+
+
+def test_a_rooms_unused_but_emittable_tag_does_not_warn(tmp_path):
+    """The counter-case that stops the warning above from becoming noise.
+
+    This room emits a ceiling and no floor, so its `floor/slab` tag goes unused. That
+    is ordinary — a room declares one key per category it *might* produce, and which
+    ones resolve depends on what sits above and below it. Warning here would fire on
+    correctly tagged rooms throughout a real model.
+    """
+    p = tmp_path / "Home.xml"
+    p.write_text(ROOM_TAGGED_FIXTURE.replace(
+        "<property name='eldr.assembly' value='ceiling/r19'/>",
+        "<property name='eldr.assembly' value='ceiling/r19 floor/slab'/>"))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        env = geometry.extract_envelope(str(p))
+    room = _room(env, "Living room")
+    # The room really does emit a ceiling and no floor — without this the `floor/slab`
+    # tag might simply have been consumed, and the test would prove nothing.
+    assert {s.category for s in room.surfaces} == {"ceiling", "exterior_wall", "window"}
+    assert _assemblies_in(room, "ceiling") == ["ceiling/r19"]
+
+
+# --- tags reaching PER-ROOM surfaces --------------------------------------------------
+#
+# Per-room surfaces aggregate: one `Surface("window", total)` used to cover every window
+# in a room. That is where a blended U does its damage, because per-room CFM is what
+# Manual T and the duct sizing run on — so a tagged window must survive as its own
+# surface rather than dissolving into the room's average.
+
+ROOM_TAGGED_FIXTURE = MULTI_LEVEL_FIXTURE.replace(
+    "<wall id='m-n' level='LM' xStart='0' yStart='0' xEnd='400' yEnd='0' "
+    "height='250' thickness='10'/>",
+    "<wall id='m-n' level='LM' xStart='0' yStart='0' xEnd='400' yEnd='0' "
+    "height='250' thickness='10'>"
+    "<property name='eldr.assembly' value='exterior_wall/r0'/></wall>",
+).replace(
+    "  <room id='rm' level='LM' name='Living room'>",
+    "  <doorOrWindow id='w-old' level='LM' catalogId='eTeks#window' "
+    "name='Sash [window/single]' x='100' y='300' width='100' height='100'/>\n"
+    "  <doorOrWindow id='w-new' level='LM' catalogId='eTeks#window' "
+    "name='Picture' x='300' y='300' width='100' height='100'/>\n"
+    "  <room id='rm' level='LM' name='Living room'>"
+    "<property name='eldr.assembly' value='ceiling/r19'/>",
+)
+
+
+def _room(env, name):
+    return next(r for r in env.rooms if r.name == name)
+
+
+def _assemblies_in(room, category):
+    return sorted((s.assembly for s in room.surfaces if s.category == category),
+                  key=lambda a: (a is not None, a))
+
+
+def test_room_windows_split_by_assembly(tmp_path):
+    p = tmp_path / "Home.xml"
+    p.write_text(ROOM_TAGGED_FIXTURE)
+    env = geometry.extract_envelope(str(p))
+    assert _assemblies_in(_room(env, "Living room"), "window") == [None, "window/single"]
+
+
+def test_room_walls_split_by_assembly(tmp_path):
+    p = tmp_path / "Home.xml"
+    p.write_text(ROOM_TAGGED_FIXTURE)
+    env = geometry.extract_envelope(str(p))
+    got = _assemblies_in(_room(env, "Living room"), "exterior_wall")
+    assert "exterior_wall/r0" in got
+    assert None in got          # the other three Main walls are untagged
+
+
+def test_openings_net_off_their_own_host_wall(tmp_path):
+    """Both windows sit on `m-s` (y=300); the tagged wall `m-n` (y=0) has none.
+
+    Netting the room's openings off whichever bucket iterates first moves glazing area
+    out of the tagged assembly and into nothing — the r0 wall shrinks by 21.5 ft² it
+    does not contain, and the per-room U-value split is wrong in exactly the dimension
+    this feature exists to get right. `m-n` is 400x250 cm, so it must keep its full
+    107.6 ft² whatever order the buckets are walked in.
+    """
+    p = tmp_path / "Home.xml"
+    p.write_text(ROOM_TAGGED_FIXTURE)
+    env = geometry.extract_envelope(str(p))
+    room = _room(env, "Living room")
+    r0 = [s for s in room.surfaces
+          if s.category == "exterior_wall" and s.assembly == "exterior_wall/r0"]
+    assert len(r0) == 1
+    assert r0[0].area_ft2 == pytest.approx(107.6, abs=0.5)
+
+    # And the room-level invariant still holds: gross wall minus openings, unchanged
+    # by where the subtraction landed.
+    walls = sum(s.area_ft2 for s in room.surfaces if s.category == "exterior_wall")
+    glazing = sum(s.area_ft2 for s in room.surfaces if s.category == "window")
+    assert walls + glazing == pytest.approx(107.6 * 2 + 80.7 * 2, abs=1.0)
+
+
+def test_room_property_tags_its_ceiling(tmp_path):
+    """A room produces a ceiling AND a floor, which is why one property carries a list
+    of keys — each lands on the surfaces of its own category."""
+    p = tmp_path / "Home.xml"
+    p.write_text(ROOM_TAGGED_FIXTURE)
+    env = geometry.extract_envelope(str(p))
+    assert _assemblies_in(_room(env, "Living room"), "ceiling") == ["ceiling/r19"]
+
+
+def test_whole_house_still_equals_sum_of_rooms_with_tags(tmp_path):
+    """The level-stack invariant must survive the re-keying: splitting a room's
+    aggregate by assembly may not change how much area there is."""
+    p = tmp_path / "Home.xml"
+    p.write_text(ROOM_TAGGED_FIXTURE)
+    env = geometry.extract_envelope(str(p))
+    for cat in ("window", "exterior_wall"):
+        per_room = sum(s.area_ft2 for r in env.rooms for s in r.surfaces
+                       if s.category == cat and r.conditioned)
+        whole = sum(s.area_ft2 for s in env.surfaces if s.category == cat)
+        assert per_room == pytest.approx(whole, rel=1e-9), cat
+
+
+def test_a_tag_cannot_flip_a_door_into_a_window(tmp_path):
+    """Window-vs-door is sniffed from the name, and the tag syntax puts a category name
+    INTO the name. Without stripping the bracket first, `[window/single]` on a door
+    would silently reclassify it — a tag changing a category by the back door."""
+    xml = FIXTURE.replace(
+        "<doorOrWindow id='win1' level='L1' catalogId='eTeks#window' name='Window' "
+        "x='500' y='500' width='100' height='100'/>",
+        "<doorOrWindow id='win1' level='L1' catalogId='eTeks#doorFrame' "
+        "name='Patio [window/single]' x='500' y='500' width='100' height='100'/>",
+    )
+    p = tmp_path / "Home.xml"
+    p.write_text(xml)
+    env = geometry.extract_envelope(str(p))
+    assert _by_cat(env).get("window") is None
+    doors = [s for s in env.surfaces if s.category == "door"]
+    assert len(doors) == 1
+    # and its window-category tag is correctly not applied to a door
+    assert doors[0].assembly is None
