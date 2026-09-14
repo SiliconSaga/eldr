@@ -1038,24 +1038,48 @@ def test_wall_tagged_with_a_window_assembly_warns(tmp_path):
     assert all(s.assembly is None for s in env.surfaces if s.category == "exterior_wall")
 
 
-def test_room_ceiling_and_floor_tags_do_not_warn_about_each_other(tmp_path):
-    """The counter-case that stops the warning above from being noise. A room emits
-    both a ceiling and a floor, so resolving one while the other's tag sits unused is
-    ordinary — warning there would fire on every correctly tagged room."""
+def test_a_walls_unused_but_emittable_tag_does_not_warn(tmp_path):
+    """A wall's category is resolved from its boundary, so a modeller may legitimately
+    declare a key for more than one of the categories a wall can produce. This wall
+    resolves as `exterior_wall`, leaving `basement_wall/block` unused — which must stay
+    silent, or the mistagged-object warning fires on correctly tagged walls instead.
+    """
     p = tmp_path / "Home.xml"
     p.write_text(FIXTURE.replace(
-        "<room id='r1' level='L1'",
-        "<room id='r1' level='L1' ",
-    ).replace(
-        "<room id='r1' level='L1' ",
-        "<room id='r1' level='L1' ", 1))
-    # Tag the room with both categories it can emit.
-    text = p.read_text().replace("</room>", "<property name='eldr.assembly' "
-                                            "value='ceiling/r19 floor/slab'/></room>", 1)
-    p.write_text(text)
+        "<wall id='w-n' level='L1' xStart='0' yStart='0' xEnd='1000' yEnd='0' "
+        "height='300' thickness='10'/>",
+        "<wall id='w-n' level='L1' xStart='0' yStart='0' xEnd='1000' yEnd='0' "
+        "height='300' thickness='10'>"
+        "<property name='eldr.assembly' "
+        "value='exterior_wall/r0 basement_wall/block'/></wall>",
+    ))
     with warnings.catch_warnings():
         warnings.simplefilter("error", UserWarning)
-        geometry.extract_envelope(str(p))
+        env = geometry.extract_envelope(str(p))
+    # The matching key still lands, so the silence is not silence about everything.
+    assert "exterior_wall/r0" in _surface_assemblies(env, "exterior_wall")
+
+
+def test_a_rooms_unused_but_emittable_tag_does_not_warn(tmp_path):
+    """The counter-case that stops the warning above from becoming noise.
+
+    This room emits a ceiling and no floor, so its `floor/slab` tag goes unused. That
+    is ordinary — a room declares one key per category it *might* produce, and which
+    ones resolve depends on what sits above and below it. Warning here would fire on
+    correctly tagged rooms throughout a real model.
+    """
+    p = tmp_path / "Home.xml"
+    p.write_text(ROOM_TAGGED_FIXTURE.replace(
+        "<property name='eldr.assembly' value='ceiling/r19'/>",
+        "<property name='eldr.assembly' value='ceiling/r19 floor/slab'/>"))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        env = geometry.extract_envelope(str(p))
+    room = _room(env, "Living room")
+    # The room really does emit a ceiling and no floor — without this the `floor/slab`
+    # tag might simply have been consumed, and the test would prove nothing.
+    assert {s.category for s in room.surfaces} == {"ceiling", "exterior_wall", "window"}
+    assert _assemblies_in(room, "ceiling") == ["ceiling/r19"]
 
 
 # --- tags reaching PER-ROOM surfaces --------------------------------------------------

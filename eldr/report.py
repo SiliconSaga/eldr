@@ -254,14 +254,19 @@ def _borrows_block(env: geometry_mod.Envelope, sc: sidecar.SideCar) -> list[str]
     floor: the geometry gap is disclosed below, while the U-value standing in for it is
     a slab's effective whole-area number, an order of magnitude off a framed floor.
     """
+    # Per SURFACE, not per category: a surface carrying a declared same-category variant
+    # takes that U-value directly and borrows nothing, even where the bare category is
+    # unset. Aggregating by category alone would report the whole category's area as
+    # borrowed when some — or all — of it resolved exactly.
     borrows: dict[str, tuple[loads.AssemblyBorrow, float]] = {}
     for s in env.surfaces:
+        borrow = loads.surface_borrow(s, sc.assemblies)
+        if borrow is None:
+            continue
         if s.category in borrows:
             borrows[s.category] = (borrows[s.category][0],
                                    borrows[s.category][1] + s.area_ft2)
-            continue
-        borrow = loads.assembly_borrow(s.category, sc.assemblies)
-        if borrow is not None:
+        else:
             borrows[s.category] = (borrow, s.area_ft2)
     if not borrows:
         return []

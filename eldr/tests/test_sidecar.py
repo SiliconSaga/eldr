@@ -552,6 +552,15 @@ def test_variant_with_unknown_category_prefix_is_rejected(tmp_path):
         _write_and_load(tmp_path, BASE_SIDECAR + "\n      windwo/single: 0.9\n")
 
 
+def test_variant_containing_whitespace_is_rejected(tmp_path):
+    """The property tag holds a whitespace-separated LIST of keys, so `window/single
+    pane` would read as `window/single` plus a stray `pane`. It would still resolve
+    from a bracketed furniture name, so the key would work from one tag source and
+    silently not from the other."""
+    with pytest.raises(ValueError, match="whitespace"):
+        _write_and_load(tmp_path, BASE_SIDECAR + "\n      window/single pane: 0.9\n")
+
+
 def test_empty_variant_is_rejected(tmp_path):
     """`window/` names a real category with an empty variant, so the unknown-category
     check passes it — and then it behaves as the bare category everywhere downstream,

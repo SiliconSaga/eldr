@@ -890,16 +890,15 @@ def extract_envelope(home_path: str, wall_boundaries: dict[str, str] | None = No
     for rid, rm in room_by_id.items():
         lid = rm["level_id"]
         surfs: list[Surface] = []
-        # Each opening comes off the bucket its host wall belongs to. Anything left
-        # over — an opening larger than its own host's gross area, or one whose host
-        # could not be resolved — spills forward in iteration order, which is what the
-        # whole-room netting used to do for everything.
-        per_bucket = dict(room_openings[rid])
-        spill = 0.0
+        # Each opening comes off the bucket its host wall belongs to, and nowhere else.
+        # There is deliberately NO spill into the next bucket: carrying an excess across
+        # assemblies is the original bug in miniature, taking area off a wall that does
+        # not host the opening. If an opening exceeds its host's share of this room the
+        # bucket simply nets to zero — the opening is still counted in full as its own
+        # window or door surface, so no area is lost from the envelope.
+        per_bucket = room_openings[rid]
         for (scat, sasm), gross in room_gross_wall[rid].items():
-            mine = per_bucket.pop((scat, sasm), 0.0) + spill
-            net = max(0.0, gross - mine)
-            spill = max(0.0, mine - gross)
+            net = max(0.0, gross - per_bucket.get((scat, sasm), 0.0))
             if net > 0.0:
                 surfs.append(Surface(scat, net, assembly=sasm))
         # Openings whose host bucket produced no gross wall at all (an interior host,

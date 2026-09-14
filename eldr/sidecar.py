@@ -329,6 +329,16 @@ def _validate(sc: SideCar) -> None:
             raise ValueError(
                 f"assemblies.{name}: empty variant — write the bare category "
                 f"'{category}' for the default, or give the variant a name")
+        # Whitespace anywhere in a variant makes the key unreachable from the property
+        # tag, whose value is a whitespace-separated LIST of keys — `window/single pane`
+        # would be read as `window/single` plus a stray `pane`. It would still resolve
+        # from a bracketed name, so the key would work from one tag source and silently
+        # not from the other. Reject it rather than ship that asymmetry.
+        if variant is not None and any(c.isspace() for c in variant):
+            raise ValueError(
+                f"assemblies.{name}: variant contains whitespace — assembly properties "
+                f"hold a whitespace-separated list of keys, so this one could never be "
+                f"referenced from a wall or room tag. Use '-' or '_' instead")
     if sc.existing_tons is not None:
         if not math.isfinite(sc.existing_tons) or sc.existing_tons <= 0:
             raise ValueError(

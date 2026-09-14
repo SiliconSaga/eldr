@@ -201,6 +201,25 @@ def assembly_borrow(category: str, assemblies: dict[str, float]) -> AssemblyBorr
     return None
 
 
+def surface_borrow(surface, assemblies):
+    """The borrow THIS surface actually makes, or None if it resolves directly.
+
+    `assembly_borrow` answers the question for a category. That is not the same question
+    once surfaces carry their own assemblies: a surface with a declared, configured,
+    same-category variant takes that U-value and borrows nothing, even where the bare
+    category is unset and the category as a whole would borrow.
+
+    Counting a surface's area against a borrow it did not make is the failure
+    `assembly_borrow` warns about in its own docstring — a report describing a borrow
+    the engine never performed.
+    """
+    if surface.assembly is not None:
+        category, _variant = sidecar.split_assembly_key(surface.assembly)
+        if category == surface.category and surface.assembly in assemblies:
+            return None
+    return assembly_borrow(surface.category, assemblies)
+
+
 def _u_value(surface, assemblies):
     """U-value for a surface: its own assembly if it declared one, else its category's.
 

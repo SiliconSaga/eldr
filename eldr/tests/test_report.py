@@ -650,6 +650,41 @@ def test_report_sums_the_area_of_every_surface_sharing_a_borrowed_category():
     assert _row(md, "`buffer_floor`")[2] == "149.5 ft²"
 
 
+def test_a_tagged_surface_does_not_count_as_borrowing():
+    """`buffer_floor` is unset, so the CATEGORY would borrow from `floor`. But this
+    surface declares `buffer_floor/framed`, which IS declared — so it resolves exactly
+    and borrows nothing. Counting its area against the borrow reports a stand-in the
+    engine never used, the failure `loads.assembly_borrow` names in its own docstring.
+    """
+    sc = sidecar.SideCar(
+        assemblies={"exterior_wall": 0.1, "floor": 0.05, "buffer_floor/framed": 0.07},
+        design=sidecar.DesignConditions(70, 20, 50),
+        infiltration_ach=0.5,
+    )
+    env = _env(surfaces=[geometry.Surface("buffer_floor", 149.5, "crawlspace",
+                                          assembly="buffer_floor/framed")])
+    md = report.render_heating(_result(), sc, env=env)
+    assert "Borrowed assembly" not in md
+
+
+def test_only_the_untagged_share_of_a_category_counts_as_borrowed():
+    """The mixed case, which is the one a real model produces: one floor tagged and
+    declared, one untagged. Only the untagged area stands on the borrowed U-value."""
+    sc = sidecar.SideCar(
+        assemblies={"exterior_wall": 0.1, "floor": 0.05, "buffer_floor/framed": 0.07},
+        design=sidecar.DesignConditions(70, 20, 50),
+        infiltration_ach=0.5,
+    )
+    env = _env(surfaces=[geometry.Surface("buffer_floor", 100.0, "crawlspace",
+                                          assembly="buffer_floor/framed"),
+                         geometry.Surface("buffer_floor", 49.5, "garage")])
+    md = report.render_heating(_result(), sc, env=env)
+    # Scope to the borrow block — the coverage table also has a `buffer_floor` row,
+    # and matching the wrong one is how a passing assertion proves nothing.
+    borrow_block = md.split("### Borrowed assembly U-values")[1]
+    assert _row(borrow_block, "`buffer_floor`")[2] == "49.5 ft²"
+
+
 def test_report_omits_the_borrow_block_when_every_assembly_is_declared():
     sc = sidecar.SideCar(
         assemblies={"exterior_wall": 0.1, "buffer_floor": 0.08, "floor": 0.05},
